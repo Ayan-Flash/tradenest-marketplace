@@ -1,74 +1,130 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import axios from 'axios';
 import { useNavigate, Link } from 'react-router-dom';
 import UpdateUser from './updateuser';
+import API_BASE_URL from '../api';
 
 function User() {
   const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [showEdit, setShowEdit] = useState(false);
   const navigate = useNavigate();
 
-  useEffect(() => {
-    const fetchUser = async () => {
-      try {
-        const token = localStorage.getItem('token');
-        
-        if (!token) {
-          navigate('/login');
-          return;
-        }
-
-        const response = await axios.get('http://localhost:5000/user', {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        });
-
-        setUser(response.data);
-      } catch (error) {
-        console.error('Error fetching user details:', error.response?.data?.message || error.message);
+  const fetchUser = useCallback(async () => {
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) {
         navigate('/login');
+        return;
       }
-    };
 
-    fetchUser();
+      setLoading(true);
+      const response = await axios.get(`${API_BASE_URL}/user`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      setUser(response.data);
+    } catch (error) {
+      console.error('Error fetching user details:', error);
+      localStorage.removeItem('token');
+      navigate('/login');
+    } finally {
+      setLoading(false);
+    }
   }, [navigate]);
+
+  useEffect(() => {
+    fetchUser();
+  }, [fetchUser]);
 
   const handleLogout = () => {
     localStorage.removeItem('token');
     navigate('/login');
-    window.location.href = 'http://localhost:5000/logout';
   };
 
   const handleUpdate = (updatedUser) => {
     setUser(updatedUser);
+    setShowEdit(false);
   };
 
+  if (loading) {
+    return (
+      <div className="text-center py-5">
+        <div className="spinner-border text-primary" role="status"></div>
+        <p className="mt-2 text-muted">Loading profile...</p>
+      </div>
+    );
+  }
+
   if (!user) {
-    return <p>Loading user details...</p>;
+    return (
+      <div className="card shadow-sm border-0 p-5 text-center my-4">
+        <h4>User not found</h4>
+        <Link to="/login" className="btn btn-primary mt-3 align-self-center">
+          Go to Login
+        </Link>
+      </div>
+    );
   }
 
   return (
-    <div>
-      <div className="navigation-links mb-3">
-        <Link to="/user" className="btn btn-link">User Profile</Link>
-        <Link to="/mycart" className="btn btn-link">My Cart</Link>
-        <Link to="/search" className="btn btn-link">Search Items</Link>
-        <Link to="/sell" className="btn btn-link">Sell Items</Link>
-        <Link to="/recd_orders" className="btn btn-link">Delivery</Link>
-        <Link to="/order_details" className="btn btn-link">Order History</Link>
+    <div className="row justify-content-center py-3">
+      <div className="col-12 col-md-8 col-lg-6">
+        <div className="card shadow-sm border-0 p-4 mb-4">
+          <div className="d-flex justify-content-between align-items-center mb-3">
+            <h3 className="fw-bold mb-0">User Profile</h3>
+            <span className="badge bg-success-subtle text-success px-3 py-2">
+              Verified Member
+            </span>
+          </div>
+
+          <div className="p-3 bg-light rounded-3 mb-4">
+            <div className="row g-2">
+              <div className="col-sm-6">
+                <span className="text-muted small">First Name:</span>
+                <p className="fw-semibold mb-2">{user.firstName || 'N/A'}</p>
+              </div>
+              <div className="col-sm-6">
+                <span className="text-muted small">Last Name:</span>
+                <p className="fw-semibold mb-2">{user.lastName || 'N/A'}</p>
+              </div>
+              <div className="col-12">
+                <span className="text-muted small">Email Address:</span>
+                <p className="fw-semibold mb-2">{user.email}</p>
+              </div>
+              <div className="col-sm-6">
+                <span className="text-muted small">Age:</span>
+                <p className="fw-semibold mb-2">{user.age || 'Not specified'}</p>
+              </div>
+              <div className="col-sm-6">
+                <span className="text-muted small">Contact Number:</span>
+                <p className="fw-semibold mb-2">{user.contactNumber || 'Not specified'}</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="d-flex gap-2">
+            <button
+              onClick={() => setShowEdit(!showEdit)}
+              className="btn btn-primary flex-grow-1 fw-semibold"
+            >
+              {showEdit ? 'Cancel Editing' : 'Edit Profile'}
+            </button>
+            <button onClick={handleLogout} className="btn btn-outline-danger">
+              Logout
+            </button>
+          </div>
+        </div>
+
+        {showEdit && (
+          <div className="card shadow-sm border-0 p-4">
+            <UpdateUser user={user} onUpdate={handleUpdate} />
+          </div>
+        )}
       </div>
-    <div className="user-details">
-      <h2>User Profile</h2>
-      <p><strong>First Name:</strong> {user.firstName}</p>
-      <p><strong>Last Name:</strong> {user.lastName}</p>
-      <p><strong>Email:</strong> {user.email}</p>
-      <p><strong>Age:</strong> {user.age}</p>
-      <p><strong>Contact Number:</strong> {user.contactNumber}</p>
-      <button onClick={handleLogout} className="btn btn-danger mt-3">Logout</button>
-      
-      <UpdateUser user={user} onUpdate={handleUpdate} />
     </div>
-  </div>
   );
 }
 

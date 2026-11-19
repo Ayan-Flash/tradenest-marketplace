@@ -1,29 +1,51 @@
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 
-const userSchema = new mongoose.Schema({
-  firstName: String,
-  lastName: String,
-  email: {
-    type: String,
-    required: true,
-    unique: true,
-    match: /^[a-zA-Z0-9._%+-]+@([a-zA-Z0-9-]+\.)*iiit\.ac\.in$/,
+const userSchema = new mongoose.Schema(
+  {
+    firstName: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    lastName: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    email: {
+      type: String,
+      required: true,
+      unique: true,
+      lowercase: true,
+      trim: true,
+      match: [/^[^\s@]+@[^\s@]+\.[^\s@]+$/, 'Please enter a valid email address'],
+    },
+    age: {
+      type: Number,
+    },
+    contactNumber: {
+      type: String,
+      trim: true,
+    },
+    password: {
+      type: String,
+    },
+    cartItems: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Item',
+      },
+    ],
+    sellerReviews: [String],
   },
-  age: Number,
-  contactNumber: String,
-  password: String,
-  cartItems: [{
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Item',
-  }],
-  sellerReviews: [String],
-}, {
-  timestamps: true,
-});
+  {
+    timestamps: true,
+  }
+);
 
-userSchema.pre('save', async function(next) {
-  if (!this.isModified('password')) return next();
+userSchema.pre('save', async function (next) {
+  if (!this.isModified('password') || !this.password) return next();
   try {
     const hashedPassword = await bcrypt.hash(this.password, 10);
     this.password = hashedPassword;

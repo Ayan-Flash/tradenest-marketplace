@@ -1,14 +1,38 @@
 import mongoose from 'mongoose';
+
+let cachedConnection = null;
+
 export const connectDB = async () => {
+  // Return existing connection if ready
+  if (mongoose.connection.readyState >= 1) {
+    return mongoose.connection;
+  }
+
+  if (cachedConnection) {
+    return cachedConnection;
+  }
+
+  const mongoUri =
+    process.env.MONGODB_URI ||
+    process.env.MONGODB_URL ||
+    process.env.MONGODB_URl;
+
+  if (!mongoUri) {
+    console.warn('⚠️ MONGODB_URI / MONGODB_URL is not defined in environment variables.');
+    return null;
+  }
+
   try {
-    await mongoose.connect(process.env.MONGODB_URl, {
-      useUnifiedTopology: true,
-      useNewUrlParser: true,
+    const conn = await mongoose.connect(mongoUri, {
+      bufferCommands: false, // Disable Mongoose buffering for serverless
+      serverSelectionTimeoutMS: 5000,
     });
-    console.log('MongoDB connected');
+    cachedConnection = conn;
+    console.log('✅ MongoDB connected successfully');
+    return conn;
   } catch (error) {
-    console.error(error.message);
-    process.exit(1);
+    console.error('❌ MongoDB connection error:', error.message);
+    throw error;
   }
 };
 
