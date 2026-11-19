@@ -1,6 +1,5 @@
 import express from 'express';
 import dotenv from 'dotenv';
-import mongoose from 'mongoose';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import axios from 'axios';
@@ -12,7 +11,8 @@ import OpenAI from 'openai';
 import User from './models/user.model.js';
 import Item from './models/item.model.js';
 import Order from './models/order.model.js';
-import { connectDB } from './config/db.js';
+import Cart from './models/cart.model.js';
+import { initDB } from './config/db.js';
 
 dotenv.config();
 
@@ -22,40 +22,30 @@ const app = express();
 app.use(express.json());
 app.use(cors({ origin: true, credentials: true }));
 
-// Database connection middleware (connects lazily or on server start)
-connectDB().catch((err) => {
-  console.warn('Initial MongoDB connection deferred:', err.message);
+// Initialize MySQL tables
+initDB().catch((err) => {
+  console.warn('Initial MySQL setup deferred:', err.message);
 });
 
-app.use(async (req, res, next) => {
-  try {
-    if (mongoose.connection.readyState === 0) {
-      await connectDB();
-    }
-  } catch (error) {
-    console.error('Database connection middleware error:', error.message);
-  }
-  next();
-});
-
-const JWT_SECRET = process.env.JWT_SECRET || 'tradenest-production-jwt-secret-key-2026';
+const JWT_SECRET = process.env.JWT_SECRET || '4cc385478345b6af501171cf632f9a1ceaf16e010565fe8f0ee881a2eb779659';
 
 app.use(
   session({
-    secret: process.env.SESSION_SECRET || 'tradenest-session-secret',
+    secret: process.env.SESSION_SECRET || '9e01f99a6daba1af335a3db1e4945979f53bdd6b0a30142a5d8a7bb265cb4b13',
     resave: false,
     saveUninitialized: true,
     cookie: { secure: process.env.NODE_ENV === 'production' },
   })
 );
 
-// CAS Authentication Setup
+// Base URL helper
 const getBaseUrl = () => {
   if (process.env.APP_URL) return process.env.APP_URL;
   if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
   return 'http://localhost:5000';
 };
 
+// CAS Authentication Setup
 const cas = new CASAuthentication({
   cas_url: process.env.CAS_URL || 'https://login.iiit.ac.in/cas',
   service_url: getBaseUrl(),
@@ -64,7 +54,6 @@ const cas = new CASAuthentication({
 // Helper for Google reCAPTCHA
 async function verifyRecaptcha(recaptchaToken) {
   const secretKey = process.env.RECAPTCHA_SECRET_KEY;
-  // If not configured in environment or using placeholder, allow in dev/fallback
   if (!secretKey || secretKey === 'your_recaptcha_secret_key' || recaptchaToken === 'BYPASS_LOCAL_TEST') {
     return true;
   }
@@ -93,7 +82,7 @@ const authenticateToken = (req, res, next) => {
 
   jwt.verify(token, JWT_SECRET, (err, user) => {
     if (err) {
-      return res.status(403).json({ message: 'Invalid token' });
+      return res.status(403).json({ message: 'Invalid or expired token' });
     }
     req.user = user;
     next();
@@ -111,7 +100,7 @@ function getOpenAIClient() {
   return openaiClient;
 }
 
-// Router to support both /api/... and direct /... routes
+// Router supporting both /api/* and /* paths
 const router = express.Router();
 
 // Health Check
@@ -119,7 +108,7 @@ router.get('/health', (req, res) => {
   res.status(200).json({
     status: 'ok',
     service: 'TradeNest API',
-    database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+    database: 'mysql',
     timestamp: new Date().toISOString(),
   });
 });
@@ -133,22 +122,19 @@ router.post('/signup', async (req, res) => {
       return res.status(400).json({ message: 'Please fill in all required fields' });
     }
 
-    const normalizedEmail = email.toLowerCase().trim();
-    const existingUser = await User.findOne({ email: normalizedEmail });
+    const existingUser = await User.findByEmail(email);
     if (existingUser) {
       return res.status(400).json({ message: 'User already exists with this email' });
     }
 
-    const user = new User({
-      firstName: firstName.trim(),
-      lastName: lastName.trim(),
-      email: normalizedEmail,
-      age: age ? Number(age) : undefined,
-      contactNumber: contactNumber ? contactNumber.trim() : undefined,
-      password: password.trim(),
+    await User.create({
+      firstName,
+      lastName,
+      email,
+      age,
+      contactNumber,
+      password,
     });
-
-    await user.save();
 
     res.status(201).json({ message: 'User registered successfully' });
   } catch (error) {
@@ -171,8 +157,7 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ message: 'Please provide both email and password' });
     }
 
-    const normalizedEmail = email.toLowerCase().trim();
-    const user = await User.findOne({ email: normalizedEmail });
+    const user = await User.findByEmail(email);
     if (!user) {
       return res.status(401).json({ message: 'User not found' });
     }
@@ -181,12 +166,12 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ message: 'Please log in using CAS Single Sign-On' });
     }
 
-    const isMatch = await bcrypt.compare(password.trim(), user.password);
+    const isMatch = await User.comparePassword(password, user.password);
     if (!isMatch) {
       return res.status(401).json({ message: 'Invalid password' });
     }
 
-    const token = jwt.sign({ userId: user._id }, JWT_SECRET, {
+    const token = jwt.sign({ userId: user.id }, JWT_SECRET, {
       expiresIn: '7d',
     });
 
@@ -216,17 +201,17 @@ router.get('/cas', cas.bounce, async (req, res) => {
       firstName = namePart;
     }
 
-    let user = await User.findOne({ email: email.toLowerCase() });
+    let user = await User.findByEmail(email);
     if (!user) {
-      user = new User({
+      user = await User.create({
         firstName,
         lastName,
-        email: email.toLowerCase(),
+        email,
+        password: null,
       });
-      await user.save();
     }
 
-    const token = jwt.sign({ userId: user._id }, JWT_SECRET, { expiresIn: '7d' });
+    const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '7d' });
     const clientRedirectUrl = process.env.CLIENT_URL || getBaseUrl();
     res.redirect(`${clientRedirectUrl}/login/${token}`);
   } catch (error) {
@@ -243,17 +228,14 @@ router.get('/logout', cas.logout, (req, res) => {
 router.get('/user', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
-
-    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
-      return res.status(400).json({ message: 'Invalid user ID' });
-    }
-
     const user = await User.findById(userId);
+
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
 
     res.status(200).json({
+      id: user.id,
       firstName: user.firstName,
       lastName: user.lastName,
       email: user.email,
@@ -272,20 +254,12 @@ router.post('/updateUser', authenticateToken, async (req, res) => {
     const { firstName, lastName, age, contactNumber } = req.body;
     const userId = req.user.userId;
 
-    if (!userId) {
-      return res.status(400).json({ message: 'User ID is required' });
-    }
-
-    const updatedUser = await User.findByIdAndUpdate(
-      userId,
-      {
-        ...(firstName && { firstName: firstName.trim() }),
-        ...(lastName && { lastName: lastName.trim() }),
-        ...(age !== undefined && { age: Number(age) }),
-        ...(contactNumber && { contactNumber: contactNumber.trim() }),
-      },
-      { new: true, runValidators: true }
-    );
+    const updatedUser = await User.update(userId, {
+      firstName,
+      lastName,
+      age,
+      contactNumber,
+    });
 
     if (!updatedUser) {
       return res.status(404).json({ message: 'User not found' });
@@ -293,13 +267,7 @@ router.post('/updateUser', authenticateToken, async (req, res) => {
 
     res.status(200).json({
       message: 'User updated successfully',
-      user: {
-        firstName: updatedUser.firstName,
-        lastName: updatedUser.lastName,
-        email: updatedUser.email,
-        age: updatedUser.age,
-        contactNumber: updatedUser.contactNumber,
-      },
+      user: updatedUser,
     });
   } catch (error) {
     console.error('Error updating user:', error.message);
@@ -322,16 +290,13 @@ router.post('/sell', authenticateToken, async (req, res) => {
       return res.status(404).json({ message: 'Seller not found' });
     }
 
-    const newItem = new Item({
-      name: name.trim(),
-      price: Number(price),
-      description: description.trim(),
-      category: category.trim(),
+    const newItem = await Item.create({
+      name,
+      price,
+      description,
+      category,
       sellerId: userId,
-      isSold: false,
     });
-
-    await newItem.save();
 
     res.status(201).json({
       message: 'Item listed for sale successfully',
@@ -349,38 +314,15 @@ router.get('/search', authenticateToken, async (req, res) => {
     const { name, category } = req.query;
     const userId = req.user?.userId;
 
-    const query = { isSold: false };
-
-    if (name) {
-      query.name = new RegExp(name.trim(), 'i');
-    }
-
-    if (category) {
-      const categories = category.split(',').map((c) => c.trim());
-      query.category = { $in: categories };
-    }
-
-    if (userId && mongoose.Types.ObjectId.isValid(userId)) {
-      query.sellerId = { $ne: new mongoose.Types.ObjectId(userId) };
-    }
-
-    const items = await Item.find(query).populate('sellerId', 'firstName lastName email');
+    const items = await Item.search({
+      name,
+      category,
+      excludeSellerId: userId,
+    });
 
     res.status(200).json({
       message: 'Items retrieved successfully',
-      items: items.map((item) => ({
-        itemId: item._id,
-        name: item.name,
-        price: item.price,
-        description: item.description,
-        category: item.category,
-        seller: {
-          name: item.sellerId
-            ? `${item.sellerId.firstName || ''} ${item.sellerId.lastName || ''}`.trim()
-            : 'Community Seller',
-          email: item.sellerId ? item.sellerId.email : '',
-        },
-      })),
+      items,
     });
   } catch (error) {
     console.error('Error retrieving items:', error.message);
@@ -393,29 +335,16 @@ router.get('/items', authenticateToken, async (req, res) => {
   try {
     const { itemId } = req.query;
 
-    if (!itemId || !mongoose.Types.ObjectId.isValid(itemId)) {
-      return res.status(400).json({ message: 'Invalid item ID' });
+    if (!itemId) {
+      return res.status(400).json({ message: 'Item ID is required' });
     }
 
-    const item = await Item.findById(itemId).populate('sellerId', 'firstName lastName email');
+    const item = await Item.findById(itemId);
     if (!item) {
       return res.status(404).json({ message: 'Item not found' });
     }
 
-    res.status(200).json({
-      itemId: item._id,
-      name: item.name,
-      price: item.price,
-      description: item.description,
-      category: item.category,
-      isSold: item.isSold,
-      seller: {
-        name: item.sellerId
-          ? `${item.sellerId.firstName || ''} ${item.sellerId.lastName || ''}`.trim()
-          : 'Community Seller',
-        email: item.sellerId ? item.sellerId.email : '',
-      },
-    });
+    res.status(200).json(item);
   } catch (error) {
     console.error('Error retrieving item details:', error.message);
     res.status(500).json({ message: 'Server error' });
@@ -428,19 +357,11 @@ router.post('/cart', authenticateToken, async (req, res) => {
     const { itemId, action } = req.body;
     const userId = req.user.userId;
 
-    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
-      return res.status(400).json({ message: 'Invalid user ID' });
-    }
-    if (!itemId || !mongoose.Types.ObjectId.isValid(itemId)) {
+    if (!itemId) {
       return res.status(400).json({ message: 'Invalid item ID' });
     }
     if (!['add', 'remove'].includes(action)) {
       return res.status(400).json({ message: 'Invalid action' });
-    }
-
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' });
     }
 
     const item = await Item.findById(itemId);
@@ -448,30 +369,25 @@ router.post('/cart', authenticateToken, async (req, res) => {
       return res.status(404).json({ message: 'Item not found' });
     }
 
-    if (item.sellerId.toString() === userId) {
+    if (String(item.sellerId) === String(userId)) {
       return res.status(403).json({ message: 'Sellers cannot add their own items to cart' });
     }
 
-    user.cartItems = user.cartItems || [];
-
     if (action === 'add') {
-      const alreadyInCart = user.cartItems.some((id) => id.toString() === itemId.toString());
-      if (!alreadyInCart) {
-        user.cartItems.push(itemId);
-      } else {
-        return res.status(200).json({ message: 'Item is already in your cart', cartItems: user.cartItems });
-      }
-    } else if (action === 'remove') {
-      user.cartItems = user.cartItems.filter((id) => id.toString() !== itemId.toString());
+      const result = await Cart.addItem(userId, itemId);
+      const cart = await Cart.getCartByUser(userId);
+      return res.status(200).json({
+        message: result.message,
+        cartItems: cart.cartItems,
+      });
+    } else {
+      const result = await Cart.removeItem(userId, itemId);
+      const cart = await Cart.getCartByUser(userId);
+      return res.status(200).json({
+        message: result.message,
+        cartItems: cart.cartItems,
+      });
     }
-
-    await user.save();
-
-    const populatedUser = await User.findById(userId).populate('cartItems');
-    res.status(200).json({
-      message: `Item successfully ${action === 'add' ? 'added to' : 'removed from'} cart`,
-      cartItems: populatedUser.cartItems.filter(Boolean),
-    });
   } catch (error) {
     console.error('Error updating cart:', error.message);
     res.status(500).json({ message: 'Server error' });
@@ -482,30 +398,12 @@ router.post('/cart', authenticateToken, async (req, res) => {
 router.get('/mycart', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
-
-    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
-      return res.status(400).json({ message: 'Invalid user ID' });
-    }
-
-    const user = await User.findById(userId).populate('cartItems');
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-
-    const validCartItems = (user.cartItems || []).filter((item) => item !== null && item !== undefined);
-    const totalCartPrice = validCartItems.reduce((total, item) => total + (item.price || 0), 0);
+    const cart = await Cart.getCartByUser(userId);
 
     res.status(200).json({
       message: 'Cart items retrieved successfully',
-      cartItems: validCartItems.map((item) => ({
-        itemId: item._id,
-        name: item.name,
-        price: item.price,
-        description: item.description,
-        category: item.category,
-        sellerId: item.sellerId,
-      })),
-      totalCartPrice,
+      cartItems: cart.cartItems,
+      totalCartPrice: cart.totalCartPrice,
     });
   } catch (error) {
     console.error('Error retrieving cart items:', error);
@@ -517,40 +415,28 @@ router.get('/mycart', authenticateToken, async (req, res) => {
 router.post('/checkout', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
+    const cart = await Cart.getCartByUser(userId);
 
-    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
-      return res.status(400).json({ message: 'Invalid user ID' });
-    }
-
-    const user = await User.findById(userId).populate('cartItems');
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-
-    const validItems = (user.cartItems || []).filter((item) => item && !item.isSold);
-    if (validItems.length === 0) {
+    if (cart.cartItems.length === 0) {
       return res.status(400).json({ message: 'Cart is empty or items have already been sold' });
     }
 
     const orders = [];
-    for (const item of validItems) {
+    for (const item of cart.cartItems) {
       const otp = Math.floor(100000 + Math.random() * 900000).toString();
       const hashedOtp = await bcrypt.hash(otp, 10);
 
-      const order = new Order({
+      const createdOrder = await Order.create({
         buyerId: userId,
         sellerId: item.sellerId,
-        itemId: item._id,
+        itemId: item.id || item.itemId,
         amount: item.price,
         hashedOtp,
-        orderStatus: 'pending',
       });
 
-      await order.save();
-
       orders.push({
-        orderId: order._id,
-        itemId: item._id,
+        orderId: createdOrder.id,
+        itemId: item.id || item.itemId,
         itemName: item.name,
         amount: item.price,
         otp,
@@ -558,8 +444,7 @@ router.post('/checkout', authenticateToken, async (req, res) => {
       });
     }
 
-    user.cartItems = [];
-    await user.save();
+    await Cart.clearCart(userId);
 
     res.status(200).json({
       message: 'Checkout successful',
@@ -575,32 +460,11 @@ router.post('/checkout', authenticateToken, async (req, res) => {
 router.get('/recd_orders', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
-
-    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
-      return res.status(400).json({ message: 'Invalid user ID' });
-    }
-
-    const orders = await Order.find({ sellerId: userId, orderStatus: 'pending' })
-      .populate('itemId', 'name price')
-      .populate('buyerId', 'firstName lastName email');
-
-    const formattedOrders = orders.map((order) => {
-      const buyerName = order.buyerId
-        ? `${order.buyerId.firstName || ''} ${order.buyerId.lastName || ''}`.trim()
-        : 'Community Buyer';
-
-      return {
-        orderId: order._id,
-        itemName: order.itemId ? order.itemId.name : 'Item removed',
-        itemPrice: order.itemId ? order.itemId.price : order.amount || 0,
-        buyerName,
-        buyerEmail: order.buyerId ? order.buyerId.email : 'N/A',
-      };
-    });
+    const orders = await Order.getPendingBySeller(userId);
 
     res.status(200).json({
       message: 'Pending orders retrieved successfully',
-      orders: formattedOrders,
+      orders,
     });
   } catch (error) {
     console.error('Error retrieving incoming orders:', error);
@@ -612,40 +476,11 @@ router.get('/recd_orders', authenticateToken, async (req, res) => {
 router.get('/order_details', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
-
-    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
-      return res.status(400).json({ message: 'Invalid user ID' });
-    }
-
-    const pendingOrders = await Order.find({
-      buyerId: userId,
-      orderStatus: 'pending',
-    }).populate('itemId', 'name price');
-
-    const successfulBoughtOrders = await Order.find({
-      orderStatus: 'success',
-      buyerId: userId,
-    }).populate('itemId', 'name price');
-
-    const successfulSoldOrders = await Order.find({
-      orderStatus: 'success',
-      sellerId: userId,
-    }).populate('itemId', 'name price');
-
-    const formatOrder = (order) => ({
-      orderId: order._id,
-      itemName: order.itemId?.name || 'Item removed',
-      itemPrice: order.itemId?.price || order.amount || 0,
-      buyerId: order.buyerId,
-      sellerId: order.sellerId,
-      orderStatus: order.orderStatus,
-    });
+    const details = await Order.getOrderDetails(userId);
 
     res.status(200).json({
       message: 'Order details retrieved successfully',
-      pendingOrders: pendingOrders.map(formatOrder),
-      successfulBoughtOrders: successfulBoughtOrders.map(formatOrder),
-      successfulSoldOrders: successfulSoldOrders.map(formatOrder),
+      ...details,
     });
   } catch (error) {
     console.error('Error retrieving order details:', error);
@@ -659,39 +494,19 @@ router.post('/cnfm_order', authenticateToken, async (req, res) => {
     const orderId = req.query.orderId || req.body.orderId;
     const { otp } = req.body;
 
-    if (!orderId || !mongoose.Types.ObjectId.isValid(orderId)) {
-      return res.status(400).json({ message: 'Invalid order ID' });
+    if (!orderId) {
+      return res.status(400).json({ message: 'Order ID is required' });
     }
     if (!otp) {
       return res.status(400).json({ message: 'OTP is required' });
     }
 
-    const order = await Order.findById(orderId);
-    if (!order) {
-      return res.status(404).json({ message: 'Order not found' });
+    const result = await Order.confirmOrder(orderId, otp);
+    if (!result.success) {
+      return res.status(result.status || 400).json({ message: result.message });
     }
 
-    const isOtpValid = await bcrypt.compare(otp.toString().trim(), order.hashedOtp);
-    if (!isOtpValid) {
-      return res.status(400).json({ message: 'Invalid OTP' });
-    }
-
-    order.orderStatus = 'success';
-    await order.save();
-
-    await Item.findByIdAndUpdate(order.itemId, { isSold: true });
-
-    await Order.updateMany(
-      {
-        _id: { $ne: orderId },
-        sellerId: order.sellerId,
-        itemId: order.itemId,
-        orderStatus: 'pending',
-      },
-      { $set: { orderStatus: 'cancelled' } }
-    );
-
-    res.status(200).json({ message: 'Order confirmed successfully! Item delivery completed.' });
+    res.status(200).json({ message: result.message });
   } catch (error) {
     console.error('Error confirming order:', error);
     res.status(500).json({ message: 'Server error' });
@@ -765,7 +580,7 @@ app.use('/', router);
 // Export for Vercel Serverless Function
 export default app;
 
-// Listen locally ONLY if run directly as the entry file (not when imported as a serverless function)
+// Listen locally ONLY if run directly as the entry file
 const isEntryScript = process.argv[1] && (
   process.argv[1].endsWith('server.js') ||
   process.argv[1].includes('backend')
@@ -777,4 +592,3 @@ if (isEntryScript && process.env.VERCEL !== '1') {
     console.log(`🚀 TradeNest Backend running on http://localhost:${PORT}`);
   });
 }
-

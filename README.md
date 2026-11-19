@@ -1,7 +1,7 @@
 # TradeNest – Buy, Sell & Rent Marketplace
 
 <p align="center">
-  <strong>One Platform. Buy, Sell, Rent. Ready for 100% Serverless Vercel Deployment.</strong>
+  <strong>One Platform. Buy, Sell, Rent. Powered by React, Express, MySQL & Vercel.</strong>
 </p>
 
 <p align="center">
@@ -12,10 +12,10 @@
 
 ## 🚀 Highlights & Production Status
 
-- **100% Vercel Ready:** Deploys completely on Vercel as a single project with zero external Python servers required.
-- **Serverless API:** Express.js backend running via Vercel Serverless Functions (`/api/*`).
-- **High-Performance Frontend:** Upgraded to React 18 + Vite with Bootstrap 5 UI, building in under 2 seconds.
-- **Integrated AI Support:** Built-in OpenAI customer assistant directly in the Node.js API.
+- **100% Vercel Ready:** Deploys completely on Vercel as a multi-service project (`backend` + `frontend`).
+- **Database:** Migrated to **MySQL** with connection pooling and automatic schema initialization (`users`, `items`, `cart_items`, `orders`).
+- **High-Performance Frontend:** React 18 + Vite with Bootstrap 5 UI, building in under 2 seconds.
+- **Integrated AI Support:** Built-in OpenAI customer assistant directly in the Node.js API (`/api/chat`).
 - **OTP Delivery Verification:** Secure handoff verification using bcrypt-hashed 6-digit one-time passwords.
 - **Zero Vulnerabilities:** Clean production dependency graph.
 
@@ -27,10 +27,10 @@
 |---|---|
 | **Frontend** | React 18, Vite, Bootstrap 5, React Router 7, Axios |
 | **Backend & Serverless** | Node.js, Express.js, Vercel Serverless Functions |
-| **Database** | MongoDB with Mongoose ODM (connection caching enabled) |
+| **Database** | MySQL (with mysql2 connection pooling & auto-migration) |
 | **Authentication & Security** | JWT (JSON Web Tokens), bcryptjs, Google reCAPTCHA |
 | **AI Integration** | OpenAI API (gpt-4o-mini / gpt-4o) |
-| **Deployment Platform** | Vercel (Frontend Static Assets + Serverless API Functions) |
+| **Deployment Platform** | Vercel (Multi-Service Project) |
 
 ---
 
@@ -39,16 +39,18 @@
 ```text
 tradenest-marketplace/
 ├── api/
-│   └── index.js              # Vercel serverless entrypoint for Express API
+│   └── index.js              # Serverless entrypoint
 ├── backend/
 │   ├── config/
-│   │   └── db.js             # Mongoose connection with serverless caching
+│   │   └── db.js             # MySQL connection pool & automatic table schema creation
 │   ├── models/
-│   │   ├── item.model.js     # Marketplace items schema
-│   │   ├── order.model.js    # Order & OTP schema
-│   │   └── user.model.js     # User authentication schema
+│   │   ├── cart.model.js     # Cart items queries
+│   │   ├── item.model.js     # Marketplace items queries
+│   │   ├── order.model.js    # Order & OTP verification queries
+│   │   └── user.model.js     # User registration & authentication queries
 │   ├── chatbot.py            # Legacy standalone Python Flask chatbot
-│   ├── requirements.txt      # Python dependencies (optional)
+│   ├── index.js              # Backend entrypoint bridge
+│   ├── package.json          # Backend dependencies
 │   └── server.js             # Express API server & routes
 ├── frontend/
 │   ├── public/               # Static assets & icons
@@ -63,99 +65,128 @@ tradenest-marketplace/
 │   ├── index.html            # Vite HTML template with Bootstrap 5
 │   ├── package.json          # Frontend dependencies & scripts
 │   └── vite.config.js        # Vite configuration & dev proxy
-├── .env.example              # Sample environment variables
+├── .env.example              # Sample environment variables with generated secrets
 ├── .gitignore                # Git ignore configuration
 ├── package.json              # Root project scripts & backend dependencies
-├── vercel.json               # Vercel deployment & routing configuration
+├── vercel.json               # Vercel multi-service project routing
 └── README.md                 # Project documentation
 ```
 
 ---
 
-## 🌐 Complete Vercel Deployment Guide
+## 🔑 Generated Production Secrets
 
-TradeNest is pre-configured with `vercel.json` to deploy both frontend static assets and backend serverless API routes within a single Vercel project.
+Use these pre-generated cryptographically secure secrets in your `.env` or Vercel Environment Variables:
+
+```env
+JWT_SECRET=4cc385478345b6af501171cf632f9a1ceaf16e010565fe8f0ee881a2eb779659
+SESSION_SECRET=9e01f99a6daba1af335a3db1e4945979f53bdd6b0a30142a5d8a7bb265cb4b13
+```
+
+---
+
+## 🗄️ How to Get a MySQL Connection String
+
+A standard MySQL connection URI follows this format:
+```text
+mysql://<username>:<password>@<host>:<port>/<database>
+```
+
+You can obtain a free cloud MySQL database in 2 minutes from any of these providers:
+
+### Option 1: TiDB Cloud (Recommended - 100% MySQL Compatible & Free Tier)
+1. Sign up for free at [tidbcloud.com](https://tidbcloud.com).
+2. Click **Create Cluster** and select the free **Serverless** tier.
+3. Once created, click **Connect** in your cluster dashboard.
+4. Choose **Node.js** or **General connection string**.
+5. Copy the connection string. It looks like:
+   ```text
+   mysql://<user>.<prefix>:<password>@gateway01.<region>.prod.aws.tidbcloud.com:4000/<database>?ssl={"rejectUnauthorized":true}
+   ```
+
+### Option 2: Aiven for MySQL (Free Tier)
+1. Sign up at [aiven.io](https://aiven.io).
+2. Create a new service and choose **MySQL**.
+3. Under the **Overview** tab, copy the **Service URI**:
+   ```text
+   mysql://avnadmin:<password>@<host>.aivencloud.com:<port>/defaultdb?ssl-mode=REQUIRED
+   ```
+
+### Option 3: Railway (Instant MySQL)
+1. Sign up at [railway.com](https://railway.com).
+2. Click **New Project** ➔ **Provision MySQL**.
+3. Under the MySQL service, click **Variables** ➔ copy `MYSQL_URL`.
+
+### Option 4: Local MySQL (for development)
+If running MySQL locally (e.g., MySQL Server, XAMPP, or Docker):
+```text
+mysql://root:yourpassword@localhost:3306/tradenest
+```
+*(Ensure you have created the database first with `CREATE DATABASE tradenest;`)*
+
+---
+
+## 🌐 Deploying to Vercel
 
 ### Step 1: Push Repository to GitHub
-Ensure all your project files are committed and pushed to your GitHub repository:
+Ensure all your project files are pushed to GitHub:
 ```bash
 git add .
-git commit -m "Production ready TradeNest for Vercel"
+git commit -m "Migrate from MongoDB to MySQL"
 git push origin main
 ```
 
 ### Step 2: Import into Vercel
-1. Log in to [Vercel](https://vercel.com).
-2. Click **Add New...** -> **Project**.
-3. Select your GitHub repository (`tradenest-marketplace`).
-4. Keep the **Framework Preset** as **Other** (or Vite).
-5. Vercel will automatically read `vercel.json` for the build settings:
-   - **Build Command:** `npm --prefix frontend install && npm --prefix frontend run build`
-   - **Output Directory:** `frontend/dist`
+1. Log in to [Vercel](https://vercel.com) and click **Add New...** ➔ **Project**.
+2. Select your repository (`tradenest-marketplace`).
+3. Vercel will automatically detect the `vercel.json` Multi-Service Project configuration:
+   - **backend:** `root: backend, framework: express`
+   - **frontend:** `root: frontend, framework: vite`
 
 ### Step 3: Configure Environment Variables in Vercel
-In the Vercel project setup (or under **Settings** -> **Environment Variables**), add the following:
+In the Vercel project setup (under **Environment Variables**), add:
 
-| Variable | Description | Example / Default |
-|---|---|---|
-| `MONGODB_URI` | MongoDB Atlas Connection String | `mongodb+srv://user:pass@cluster.mongodb.net/tradenest` |
-| `JWT_SECRET` | Secret key used for signing JWT tokens | `your_secure_32_character_jwt_secret` |
-| `SESSION_SECRET` | Session secret for express sessions | `your_secure_session_secret` |
-| `OPENAI_API_KEY` | OpenAI API key for AI assistant | `sk-...` |
-| `RECAPTCHA_SECRET_KEY` | Google reCAPTCHA secret key | *(Optional in dev, recommended for prod)* |
+| Variable | Value |
+|---|---|
+| `MYSQL_URI` | Your MySQL connection string (from TiDB, Aiven, Railway, etc.) |
+| `JWT_SECRET` | `4cc385478345b6af501171cf632f9a1ceaf16e010565fe8f0ee881a2eb779659` |
+| `SESSION_SECRET` | `9e01f99a6daba1af335a3db1e4945979f53bdd6b0a30142a5d8a7bb265cb4b13` |
+| `OPENAI_API_KEY` | *(Optional)* Your OpenAI key for AI chatbot responses |
+| `RECAPTCHA_SECRET_KEY` | *(Optional)* Your Google reCAPTCHA secret key |
 
 ### Step 4: Deploy
-Click **Deploy**. In under a minute, your full-stack TradeNest marketplace will be live on a `*.vercel.app` domain!
+Click **Deploy**. Vercel will build both services in parallel and your full-stack MySQL-powered marketplace will be live!
 
 ---
 
 ## 💻 Local Development Setup
 
-### 1. Prerequisites
-- Node.js (v18 or above recommended)
-- MongoDB running locally or a MongoDB Atlas connection string
-
-### 2. Install Dependencies
-Install root and backend packages:
+### 1. Install Dependencies
 ```bash
 npm install
-```
-
-Install frontend packages:
-```bash
 npm --prefix frontend install
+npm --prefix backend install
 ```
 
-### 3. Configure Local Environment
-Copy `.env.example` to `.env` in the root directory:
+### 2. Configure Local Environment
+Create `.env` in the root directory:
 ```bash
 cp .env.example .env
 ```
-Fill in your `MONGODB_URI` and `JWT_SECRET`.
+Update `MYSQL_URI` with your MySQL database credentials.
 
-### 4. Run the Application Locally
-Run the backend API:
+### 3. Run Locally
+Run the backend:
 ```bash
 npm run dev
-# Starts backend server on http://localhost:5000
+# Starts on http://localhost:5000
 ```
 
-In a second terminal, run the frontend:
+In another terminal, run the frontend:
 ```bash
 npm run frontend
-# Starts Vite dev server on http://localhost:3000
+# Starts on http://localhost:3000
 ```
-Open [http://localhost:3000](http://localhost:3000) in your browser. All API requests made to `/api/*` are automatically proxied to `http://localhost:5000`.
-
----
-
-## 🔒 Security Architecture
-
-- **JWT Authentication:** Stateful token verification with expiration checks on protected endpoints.
-- **Bcrypt Password Hashing:** Automatically hashes passwords before saving to MongoDB.
-- **OTP Delivery Verification:** Checkout produces a 6-digit OTP stored as a bcrypt hash in MongoDB. The seller cannot complete the transaction without entering the buyer's matching OTP.
-- **reCAPTCHA Protection:** Protects login endpoints against automated bots with development fallback.
-- **Input Sanitization & Validation:** Prevents common injection attacks and verifies MongoDB ObjectIDs before queries.
 
 ---
 
@@ -163,28 +194,19 @@ Open [http://localhost:3000](http://localhost:3000) in your browser. All API req
 
 | Method | Route | Description | Auth Required |
 |---|---|---|---|
-| `GET` | `/api/health` | Health check & database connection status | No |
-| `POST` | `/api/signup` | Register a new user account | No |
-| `POST` | `/api/login` | Authenticate user & return JWT token | No |
-| `GET` | `/api/user` | Retrieve user profile information | Yes |
-| `POST` | `/api/updateUser` | Update user profile details | Yes |
-| `GET` | `/api/search` | Search & filter active marketplace listings | Yes |
-| `GET` | `/api/items` | Retrieve specific product details | Yes |
-| `POST` | `/api/sell` | List a new item for sale | Yes |
-| `POST` | `/api/cart` | Add or remove items from cart | Yes |
-| `GET` | `/api/mycart` | Get current user's cart and subtotal | Yes |
-| `POST` | `/api/checkout` | Checkout cart and generate OTPs | Yes |
-| `GET` | `/api/recd_orders` | Incoming orders for seller delivery | Yes |
-| `POST` | `/api/cnfm_order` | Confirm order handover with OTP | Yes |
+| `GET` | `/api/health` | Health check & MySQL status | No |
+| `POST` | `/api/signup` | Register a new user | No |
+| `POST` | `/api/login` | Authenticate user & get JWT | No |
+| `GET` | `/api/user` | Get profile details | Yes |
+| `POST` | `/api/updateUser` | Update profile information | Yes |
+| `GET` | `/api/search` | Search & filter items | Yes |
+| `GET` | `/api/items` | Get item details | Yes |
+| `POST` | `/api/sell` | List an item for sale | Yes |
+| `POST` | `/api/cart` | Add/remove items from cart | Yes |
+| `GET` | `/api/mycart` | Get cart items & subtotal | Yes |
+| `POST` | `/api/checkout` | Checkout cart & generate OTP | Yes |
+| `GET` | `/api/recd_orders` | Incoming orders for delivery | Yes |
+| `POST` | `/api/cnfm_order` | Confirm handover with OTP | Yes |
 | `GET` | `/api/order_details` | Order history (pending, bought, sold) | Yes |
 | `POST` | `/api/chat` | AI chatbot customer assistant | No |
 | `POST` | `/api/new-session` | Reset AI chatbot session | No |
-
----
-
-## Project Information
-
-**Project Name:** TradeNest  
-**Category:** Full-Stack Web Application / E-Commerce Marketplace  
-**Maintainer:** Faisal Imtiaz  
-**GitHub:** [finefigo](https://github.com/finefigo)
