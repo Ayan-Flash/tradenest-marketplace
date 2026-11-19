@@ -89,42 +89,89 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// AI Client for Chatbot (Google Gemini with OpenAI fallback)
-let aiClient = null;
-let currentProvider = null;
+// Helper to call Google Gemini API directly with model fallbacks and clean turn formatting
+async function callGeminiAPI(apiKey, systemPrompt, rawHistory, preferredModel = 'gemini-2.5-flash') {
+  const models = [
+    preferredModel,
+    'gemini-2.5-flash',
+    'gemini-1.5-flash',
+    'gemini-2.0-flash',
+    'gemini-2.5-flash-lite',
+  ].filter((m, i, arr) => m && arr.indexOf(m) === i);
 
-function getAIClient() {
-  const geminiKey = process.env.GEMINI_API_KEY;
-  const openaiKey = process.env.OPENAI_API_KEY;
+  // Format contents for Gemini:
+  // 1. Map roles: 'assistant' -> 'model', 'user' -> 'user'
+  // 2. Discard any leading messages from 'model' (Gemini requires the first turn to have role 'user')
+  // 3. Ensure strictly alternating turns (merge consecutive messages with identical roles)
+  const mapped = [];
+  for (const m of rawHistory) {
+    if (m.role === 'system') continue;
+    const role = m.role === 'assistant' || m.role === 'model' ? 'model' : 'user';
+    const text = String(m.content || m.parts?.[0]?.text || '').trim();
+    if (!text) continue;
 
-  if (geminiKey) {
-    if (!aiClient || currentProvider !== 'gemini') {
-      aiClient = new OpenAI({
-        apiKey: geminiKey,
-        baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/',
+    if (mapped.length === 0 && role === 'model') {
+      // Skip initial greeting from assistant so first message is always user
+      continue;
+    }
+
+    if (mapped.length > 0 && mapped[mapped.length - 1].role === role) {
+      mapped[mapped.length - 1].parts[0].text += `\n${text}`;
+    } else {
+      mapped.push({
+        role,
+        parts: [{ text }],
       });
-      currentProvider = 'gemini';
     }
-    return {
-      client: aiClient,
-      provider: 'gemini',
-      model: process.env.GEMINI_MODEL || 'gemini-3.8-flash',
-    };
   }
 
-  if (openaiKey) {
-    if (!aiClient || currentProvider !== 'openai') {
-      aiClient = new OpenAI({ apiKey: openaiKey });
-      currentProvider = 'openai';
-    }
-    return {
-      client: aiClient,
-      provider: 'openai',
-      model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
-    };
+  if (mapped.length === 0) {
+    mapped.push({
+      role: 'user',
+      parts: [{ text: 'Hello' }],
+    });
   }
 
-  return null;
+  let lastError = null;
+
+  for (const model of models) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+      const payload = {
+        contents: mapped,
+      };
+      if (systemPrompt) {
+        payload.systemInstruction = {
+          parts: [{ text: systemPrompt }],
+        };
+      }
+
+      const res = await axios.post(url, payload, {
+        headers: { 'Content-Type': 'application/json' },
+        timeout: 25000,
+      });
+
+      const candidate = res.data?.candidates?.[0];
+      const text = candidate?.content?.parts?.[0]?.text;
+      if (text) {
+        return text;
+      }
+    } catch (err) {
+      lastError = err;
+      const status = err.response?.status;
+      const errDetail = err.response?.data?.error?.message || err.message;
+      console.warn(`[Gemini] Model ${model} attempt failed (${status}): ${errDetail}`);
+      if (status === 404 || status === 400) {
+        // Try next fallback model
+        continue;
+      }
+      if (status === 403 || status === 401) {
+        throw new Error(`Gemini API key error: ${errDetail}`);
+      }
+    }
+  }
+
+  throw lastError || new Error('All Gemini model fallbacks exhausted.');
 }
 
 // Router supporting both /api/* and /* paths
@@ -549,18 +596,17 @@ router.post('/chat', async (req, res) => {
       return res.status(400).json({ error: 'No message provided' });
     }
 
-    const aiConfig = getAIClient();
-    if (!aiConfig) {
-      const notice = "Hello! I'm the TradeNest AI Assistant. To enable live AI responses, please set your GEMINI_API_KEY in the environment settings.";
+    const geminiKey = process.env.GEMINI_API_KEY;
+    const openaiKey = process.env.OPENAI_API_KEY;
+
+    if (!geminiKey && !openaiKey) {
+      const notice = "Hello! I'm the TradeNest AI Assistant. To enable live AI responses, please set your GEMINI_API_KEY in the Render environment settings.";
       return res.status(200).json({
         reply: notice,
         messages: [
           ...messages,
           { role: 'user', content: message },
-          {
-            role: 'assistant',
-            content: notice,
-          },
+          { role: 'assistant', content: notice },
         ],
       });
     }
@@ -572,58 +618,47 @@ router.post('/chat', async (req, res) => {
     const systemPrompt =
       'You are the friendly, helpful AI support assistant for TradeNest, an e-commerce marketplace where users buy, sell, and rent products. Explain how to browse items, list items for sale, and complete transactions using OTP confirmation codes.';
 
-    const hasSystem = conversationHistory.some((m) => m.role === 'system');
-    const messagesToSend = hasSystem
-      ? conversationHistory
-      : [
-          {
-            role: 'system',
-            content: systemPrompt,
-          },
-          ...conversationHistory,
-        ];
-
     let botMessage = '';
 
-    try {
-      const completion = await aiConfig.client.chat.completions.create({
-        model: aiConfig.model,
-        messages: messagesToSend,
-      });
-      botMessage =
-        completion.choices[0]?.message?.content || "I couldn't generate a response.";
-    } catch (apiErr) {
-      // If Gemini OpenAI-compatibility had an issue, fallback to direct Gemini REST API
-      if (aiConfig.provider === 'gemini') {
-        const geminiKey = process.env.GEMINI_API_KEY;
-        const modelName = aiConfig.model || 'gemini-3.8-flash';
-        const restUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${geminiKey}`;
+    if (geminiKey) {
+      try {
+        botMessage = await callGeminiAPI(
+          geminiKey,
+          systemPrompt,
+          conversationHistory,
+          process.env.GEMINI_MODEL || 'gemini-2.5-flash'
+        );
+      } catch (geminiErr) {
+        console.error('Gemini API execution error:', geminiErr.message);
+        botMessage = `⚠️ Google Gemini error: ${geminiErr.message}. Please verify your GEMINI_API_KEY in Render.`;
+      }
+    } else if (openaiKey) {
+      try {
+        const client = new OpenAI({ apiKey: openaiKey });
+        const hasSystem = conversationHistory.some((m) => m.role === 'system');
+        const messagesToSend = hasSystem
+          ? conversationHistory
+          : [{ role: 'system', content: systemPrompt }, ...conversationHistory];
 
-        const contents = conversationHistory.map((m) => ({
-          role: m.role === 'assistant' ? 'model' : 'user',
-          parts: [{ text: m.content }],
-        }));
-
-        const restRes = await axios.post(restUrl, {
-          contents,
-          systemInstruction: {
-            parts: [{ text: systemPrompt }],
-          },
+        const completion = await client.chat.completions.create({
+          model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+          messages: messagesToSend,
         });
-
-        botMessage =
-          restRes.data?.candidates?.[0]?.content?.parts?.[0]?.text || "I couldn't generate a response.";
-      } else {
-        throw apiErr;
+        botMessage = completion.choices[0]?.message?.content || "I couldn't generate a response.";
+      } catch (openAiErr) {
+        console.error('OpenAI error:', openAiErr.message);
+        botMessage = `⚠️ OpenAI error: ${openAiErr.message}`;
       }
     }
 
     const updatedHistory = [...conversationHistory, { role: 'assistant', content: botMessage }];
-
     res.status(200).json({ reply: botMessage, messages: updatedHistory });
   } catch (error) {
-    console.error('AI Chat error:', error.message);
-    res.status(500).json({ error: 'Error communicating with AI service' });
+    console.error('AI Chat unexpected error:', error.message);
+    res.status(200).json({
+      reply: '⚠️ Sorry, there was an issue processing your request. Please check the backend logs.',
+      messages: Array.isArray(req.body?.messages) ? req.body.messages : [],
+    });
   }
 });
 
