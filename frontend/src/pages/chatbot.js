@@ -61,7 +61,7 @@ function Chatbot() {
         ...prev,
         {
           role: 'assistant',
-          content: '⚠️ Sorry, there was an issue processing your request. Please ensure the backend is running and OPENAI_API_KEY is configured.'
+          content: '⚠️ Sorry, there was an issue processing your request. Please ensure the backend is running and GEMINI_API_KEY is configured.'
         }
       ]);
     } finally {

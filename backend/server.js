@@ -89,15 +89,42 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// OpenAI Client for Chatbot
-let openaiClient = null;
-function getOpenAIClient() {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return null;
-  if (!openaiClient) {
-    openaiClient = new OpenAI({ apiKey });
+// AI Client for Chatbot (Google Gemini with OpenAI fallback)
+let aiClient = null;
+let currentProvider = null;
+
+function getAIClient() {
+  const geminiKey = process.env.GEMINI_API_KEY;
+  const openaiKey = process.env.OPENAI_API_KEY;
+
+  if (geminiKey) {
+    if (!aiClient || currentProvider !== 'gemini') {
+      aiClient = new OpenAI({
+        apiKey: geminiKey,
+        baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/',
+      });
+      currentProvider = 'gemini';
+    }
+    return {
+      client: aiClient,
+      provider: 'gemini',
+      model: process.env.GEMINI_MODEL || 'gemini-3.8-flash',
+    };
   }
-  return openaiClient;
+
+  if (openaiKey) {
+    if (!aiClient || currentProvider !== 'openai') {
+      aiClient = new OpenAI({ apiKey: openaiKey });
+      currentProvider = 'openai';
+    }
+    return {
+      client: aiClient,
+      provider: 'openai',
+      model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+    };
+  }
+
+  return null;
 }
 
 // Router supporting both /api/* and /* paths
@@ -513,7 +540,7 @@ router.post('/cnfm_order', authenticateToken, async (req, res) => {
   }
 });
 
-// Chatbot (Integrated Node.js + OpenAI)
+// Chatbot (Integrated Node.js + Google Gemini / OpenAI)
 router.post('/chat', async (req, res) => {
   try {
     const { message, messages = [] } = req.body;
@@ -522,16 +549,17 @@ router.post('/chat', async (req, res) => {
       return res.status(400).json({ error: 'No message provided' });
     }
 
-    const client = getOpenAIClient();
-    if (!client) {
+    const aiConfig = getAIClient();
+    if (!aiConfig) {
+      const notice = "Hello! I'm the TradeNest AI Assistant. To enable live AI responses, please set your GEMINI_API_KEY in the environment settings.";
       return res.status(200).json({
-        reply: "Hello! I'm the TradeNest AI Assistant. To enable live AI intelligence, please set your OPENAI_API_KEY in the Vercel or environment settings.",
+        reply: notice,
         messages: [
           ...messages,
           { role: 'user', content: message },
           {
             role: 'assistant',
-            content: "Hello! I'm the TradeNest AI Assistant. To enable live AI intelligence, please set your OPENAI_API_KEY in the Vercel or environment settings.",
+            content: notice,
           },
         ],
       });
@@ -541,30 +569,60 @@ router.post('/chat', async (req, res) => {
       ? [...messages]
       : [{ role: 'user', content: message }];
 
+    const systemPrompt =
+      'You are the friendly, helpful AI support assistant for TradeNest, an e-commerce marketplace where users buy, sell, and rent products. Explain how to browse items, list items for sale, and complete transactions using OTP confirmation codes.';
+
     const hasSystem = conversationHistory.some((m) => m.role === 'system');
     const messagesToSend = hasSystem
       ? conversationHistory
       : [
           {
             role: 'system',
-            content:
-              'You are the friendly, helpful AI support assistant for TradeNest, an e-commerce marketplace where users buy, sell, and rent products. Explain how to browse items, list items for sale, and complete transactions using OTP confirmation codes.',
+            content: systemPrompt,
           },
           ...conversationHistory,
         ];
 
-    const completion = await client.chat.completions.create({
-      model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
-      messages: messagesToSend,
-    });
+    let botMessage = '';
 
-    const botMessage =
-      completion.choices[0]?.message?.content || "I couldn't generate a response.";
+    try {
+      const completion = await aiConfig.client.chat.completions.create({
+        model: aiConfig.model,
+        messages: messagesToSend,
+      });
+      botMessage =
+        completion.choices[0]?.message?.content || "I couldn't generate a response.";
+    } catch (apiErr) {
+      // If Gemini OpenAI-compatibility had an issue, fallback to direct Gemini REST API
+      if (aiConfig.provider === 'gemini') {
+        const geminiKey = process.env.GEMINI_API_KEY;
+        const modelName = aiConfig.model || 'gemini-3.8-flash';
+        const restUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${geminiKey}`;
+
+        const contents = conversationHistory.map((m) => ({
+          role: m.role === 'assistant' ? 'model' : 'user',
+          parts: [{ text: m.content }],
+        }));
+
+        const restRes = await axios.post(restUrl, {
+          contents,
+          systemInstruction: {
+            parts: [{ text: systemPrompt }],
+          },
+        });
+
+        botMessage =
+          restRes.data?.candidates?.[0]?.content?.parts?.[0]?.text || "I couldn't generate a response.";
+      } else {
+        throw apiErr;
+      }
+    }
+
     const updatedHistory = [...conversationHistory, { role: 'assistant', content: botMessage }];
 
     res.status(200).json({ reply: botMessage, messages: updatedHistory });
   } catch (error) {
-    console.error('OpenAI Chat error:', error.message);
+    console.error('AI Chat error:', error.message);
     res.status(500).json({ error: 'Error communicating with AI service' });
   }
 });

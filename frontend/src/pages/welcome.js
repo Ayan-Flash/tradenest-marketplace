@@ -64,7 +64,7 @@ function Welcome() {
                 <div className="fs-1 text-info mb-2">🤖</div>
                 <h5 className="fw-bold">AI Support Assistant</h5>
                 <p className="text-muted small">
-                  Integrated chatbot powered by OpenAI to assist you 24/7 with questions and marketplace navigation.
+                  Integrated chatbot powered by Google Gemini to assist you 24/7 with questions and marketplace navigation.
                 </p>
               </div>
             </div>
