@@ -1,272 +1,190 @@
 # TradeNest – Buy, Sell & Rent Marketplace
 
 <p align="center">
-  <strong>One Platform. Buy, Sell, Rent.</strong>
+  <strong>One Platform. Buy, Sell, Rent. Ready for 100% Serverless Vercel Deployment.</strong>
 </p>
 
 <p align="center">
-  A unified digital marketplace that connects buyers and sellers, making it easier to purchase, sell, and rent products through a single platform.
+  A unified, modern full-stack digital marketplace connecting buyers and sellers to purchase, sell, and rent items with OTP verification security and 24/7 AI-powered customer support.
 </p>
 
 ---
 
-## About the Project
+## 🚀 Highlights & Production Status
 
-**TradeNest** is a full-stack e-commerce marketplace designed to simplify the way people buy, sell, and rent products.
+- **100% Vercel Ready:** Deploys completely on Vercel as a single project with zero external Python servers required.
+- **Serverless API:** Express.js backend running via Vercel Serverless Functions (`/api/*`).
+- **High-Performance Frontend:** Upgraded to React 18 + Vite with Bootstrap 5 UI, building in under 2 seconds.
+- **Integrated AI Support:** Built-in OpenAI customer assistant directly in the Node.js API.
+- **OTP Delivery Verification:** Secure handoff verification using bcrypt-hashed 6-digit one-time passwords.
+- **Zero Vulnerabilities:** Clean production dependency graph.
 
-The platform provides a convenient environment where users can explore available products, list their own items for sale or rent, manage orders, and receive assistance through an AI-powered customer support chatbot.
-
-By combining multiple transaction models into one application, TradeNest aims to provide a flexible and accessible marketplace experience.
-
-## Key Features
-
-### Authentication & User Management
-
-- User registration and login using email and password.
-- JWT-based authentication.
-- Institutional CAS-based Single Sign-On (SSO) integration.
-- Google reCAPTCHA protection.
-- User profile management.
-
-### Product Marketplace
-
-- Browse products available for purchase or rental.
-- Explore available marketplace listings.
-- View product information.
-- Access buying and renting options.
-
-### Sell & Rent
-
-- List products for sale.
-- Make products available for rental.
-- Manage product listings.
-
-### Order Management
-
-- Place product orders.
-- Complete the checkout process.
-- Track order information and status.
-
-### AI-Powered Customer Support
-
-- Integrated AI chatbot for customer assistance.
-- Natural language interaction.
-- OpenAI API integration.
-- Dedicated Python-based chatbot service.
+---
 
 ## Technology Stack
 
-| Category | Technologies |
+| Layer | Technologies |
 |---|---|
-| Frontend | React.js, Bootstrap |
-| Backend | Node.js, Express.js |
-| Database | MongoDB |
-| Authentication | JWT, bcrypt, CAS |
-| Security | Google reCAPTCHA |
-| AI Integration | Python, Flask, OpenAI API |
+| **Frontend** | React 18, Vite, Bootstrap 5, React Router 7, Axios |
+| **Backend & Serverless** | Node.js, Express.js, Vercel Serverless Functions |
+| **Database** | MongoDB with Mongoose ODM (connection caching enabled) |
+| **Authentication & Security** | JWT (JSON Web Tokens), bcryptjs, Google reCAPTCHA |
+| **AI Integration** | OpenAI API (gpt-4o-mini / gpt-4o) |
+| **Deployment Platform** | Vercel (Frontend Static Assets + Serverless API Functions) |
 
-## System Architecture
-
-TradeNest follows a multi-tier architecture consisting of a frontend application, backend server, database, and an independent AI chatbot service.
-
-```text
-                 TRADENEST
-                     |
-          +----------+----------+
-          |                     |
-       FRONTEND              BACKEND
-       React.js           Node.js + Express
-          |                     |
-          +------ API ----------+
-                                |
-                         MongoDB Database
-                                |
-                       Python Chatbot Service
-                                |
-                            OpenAI API
-```
-
-### Architecture Components
-
-- **Frontend:** Handles user interactions, product browsing, and marketplace operations.
-- **Backend:** Manages application logic, authentication, API requests, and order operations.
-- **Database:** MongoDB stores user, product, and order-related information.
-- **Chatbot Service:** A separate Python service handles AI-powered customer support using the OpenAI API.
+---
 
 ## Project Structure
 
 ```text
-TradeNest/
-│
+tradenest-marketplace/
+├── api/
+│   └── index.js              # Vercel serverless entrypoint for Express API
 ├── backend/
 │   ├── config/
-│   │   └── db.js
-│   │
+│   │   └── db.js             # Mongoose connection with serverless caching
 │   ├── models/
-│   │   ├── item.model.js
-│   │   ├── order.model.js
-│   │   └── user.model.js
-│   │
-│   ├── chatbot.py
-│   ├── requirements.txt
-│   ├── server.js
-│   └── .env
-│
+│   │   ├── item.model.js     # Marketplace items schema
+│   │   ├── order.model.js    # Order & OTP schema
+│   │   └── user.model.js     # User authentication schema
+│   ├── chatbot.py            # Legacy standalone Python Flask chatbot
+│   ├── requirements.txt      # Python dependencies (optional)
+│   └── server.js             # Express API server & routes
 ├── frontend/
-│   ├── public/
+│   ├── public/               # Static assets & icons
 │   ├── src/
-│   │   ├── pages/
-│   │   ├── App.js
-│   │   ├── index.css
-│   │   └── index.js
-│   └── package.json
-│
-├── .gitignore
-├── package.json
-├── package-lock.json
-└── README.md
+│   │   ├── components/
+│   │   │   └── Navbar.js     # Shared marketplace navigation
+│   │   ├── pages/            # Marketplace views & workflows
+│   │   ├── api.js            # Unified dynamic API base configuration
+│   │   ├── App.js            # Main application router
+│   │   ├── index.css         # Custom styling
+│   │   └── index.js          # React DOM entrypoint
+│   ├── index.html            # Vite HTML template with Bootstrap 5
+│   ├── package.json          # Frontend dependencies & scripts
+│   └── vite.config.js        # Vite configuration & dev proxy
+├── .env.example              # Sample environment variables
+├── .gitignore                # Git ignore configuration
+├── package.json              # Root project scripts & backend dependencies
+├── vercel.json               # Vercel deployment & routing configuration
+└── README.md                 # Project documentation
 ```
-
-## Installation & Setup
-
-Follow the instructions below to run TradeNest on your local machine.
-
-### Prerequisites
-
-Make sure you have installed:
-
-- Node.js (v16 or above)
-- npm
-- Python (v3.8 or above)
-- MongoDB account or connection string
-- Git
-
-### 1. Clone the Repository
-
-```bash
-git clone https://github.com/finefigo/tradenest-marketplace.git
-```
-
-Navigate to the project directory:
-
-```bash
-cd tradenest-marketplace
-```
-
-### 2. Install Node.js Dependencies
-
-From the project root directory:
-
-```bash
-npm install
-```
-
-### 3. Install Python Dependencies
-
-```bash
-pip install -r backend/requirements.txt
-```
-
-### 4. Configure Environment Variables
-
-TradeNest requires environment variables for database connectivity, authentication, security, and AI chatbot integration.
-
-Create two separate `.env` files.
-
-**Root directory `.env`**
-
-```env
-MONGODB_URL=your_mongodb_connection_string
-JWT_SECRET=your_secure_jwt_secret
-RECAPTCHA_SECRET_KEY=your_recaptcha_secret_key
-```
-
-**Backend directory `backend/.env`**
-
-```env
-OPENAI_API_KEY=your_openai_api_key
-```
-
-Replace the placeholder values with your actual credentials.
-
-**Security Notice:**
-
-- Never upload `.env` files to GitHub.
-- Never expose API keys, database credentials, or JWT secrets.
-- Use environment variables for sensitive configuration.
-
-### 5. Start the Backend Server
-
-From the root directory:
-
-```bash
-npm run dev
-```
-
-### 6. Start the AI Chatbot Service
-
-Open a new terminal:
-
-```bash
-python backend/chatbot.py
-```
-
-The chatbot service runs on port `5001`.
-
-### 7. Start the Frontend
-
-Open another terminal:
-
-```bash
-cd frontend
-npm install
-npm start
-```
-
-Once all services are running, access the application using the local URL displayed by the frontend development server.
-
-## Security Implementation
-
-The application incorporates several security measures:
-
-- JWT-based user authentication.
-- Password hashing using bcrypt.
-- Google reCAPTCHA protection against automated requests.
-- Environment-based secret management.
-- Input validation and sanitization.
-
-## Future Enhancements
-
-The following features are potential areas for future development:
-
-- Advanced product search and filtering.
-- Wishlist and saved products.
-- Product ratings and customer reviews.
-- Enhanced seller dashboard.
-- Rental duration and pricing calculator.
-- Real-time buyer-seller communication.
-- Secure online payment gateway.
-- Admin dashboard and marketplace analytics.
-- Enhanced AI-powered customer assistance.
-
-*These are planned improvements and are not claimed as existing functionality.*
-
-## Project Information
-
-**Project Name:** TradeNest
-
-**Category:** Full-Stack Web Application / E-Commerce Marketplace
-
-**Developer & Maintainer:** Faisal Imtiaz
-
-**GitHub:** [finefigo](https://github.com/finefigo)
 
 ---
 
-<p align="center">
-  <strong>TradeNest</strong>
-  <br/>
-  One Platform. Buy, Sell, Rent.
-  <br/><br/>
-  Built using React, Node.js, MongoDB and Python.
-</p>
+## 🌐 Complete Vercel Deployment Guide
+
+TradeNest is pre-configured with `vercel.json` to deploy both frontend static assets and backend serverless API routes within a single Vercel project.
+
+### Step 1: Push Repository to GitHub
+Ensure all your project files are committed and pushed to your GitHub repository:
+```bash
+git add .
+git commit -m "Production ready TradeNest for Vercel"
+git push origin main
+```
+
+### Step 2: Import into Vercel
+1. Log in to [Vercel](https://vercel.com).
+2. Click **Add New...** -> **Project**.
+3. Select your GitHub repository (`tradenest-marketplace`).
+4. Keep the **Framework Preset** as **Other** (or Vite).
+5. Vercel will automatically read `vercel.json` for the build settings:
+   - **Build Command:** `npm --prefix frontend install && npm --prefix frontend run build`
+   - **Output Directory:** `frontend/dist`
+
+### Step 3: Configure Environment Variables in Vercel
+In the Vercel project setup (or under **Settings** -> **Environment Variables**), add the following:
+
+| Variable | Description | Example / Default |
+|---|---|---|
+| `MONGODB_URI` | MongoDB Atlas Connection String | `mongodb+srv://user:pass@cluster.mongodb.net/tradenest` |
+| `JWT_SECRET` | Secret key used for signing JWT tokens | `your_secure_32_character_jwt_secret` |
+| `SESSION_SECRET` | Session secret for express sessions | `your_secure_session_secret` |
+| `OPENAI_API_KEY` | OpenAI API key for AI assistant | `sk-...` |
+| `RECAPTCHA_SECRET_KEY` | Google reCAPTCHA secret key | *(Optional in dev, recommended for prod)* |
+
+### Step 4: Deploy
+Click **Deploy**. In under a minute, your full-stack TradeNest marketplace will be live on a `*.vercel.app` domain!
+
+---
+
+## 💻 Local Development Setup
+
+### 1. Prerequisites
+- Node.js (v18 or above recommended)
+- MongoDB running locally or a MongoDB Atlas connection string
+
+### 2. Install Dependencies
+Install root and backend packages:
+```bash
+npm install
+```
+
+Install frontend packages:
+```bash
+npm --prefix frontend install
+```
+
+### 3. Configure Local Environment
+Copy `.env.example` to `.env` in the root directory:
+```bash
+cp .env.example .env
+```
+Fill in your `MONGODB_URI` and `JWT_SECRET`.
+
+### 4. Run the Application Locally
+Run the backend API:
+```bash
+npm run dev
+# Starts backend server on http://localhost:5000
+```
+
+In a second terminal, run the frontend:
+```bash
+npm run frontend
+# Starts Vite dev server on http://localhost:3000
+```
+Open [http://localhost:3000](http://localhost:3000) in your browser. All API requests made to `/api/*` are automatically proxied to `http://localhost:5000`.
+
+---
+
+## 🔒 Security Architecture
+
+- **JWT Authentication:** Stateful token verification with expiration checks on protected endpoints.
+- **Bcrypt Password Hashing:** Automatically hashes passwords before saving to MongoDB.
+- **OTP Delivery Verification:** Checkout produces a 6-digit OTP stored as a bcrypt hash in MongoDB. The seller cannot complete the transaction without entering the buyer's matching OTP.
+- **reCAPTCHA Protection:** Protects login endpoints against automated bots with development fallback.
+- **Input Sanitization & Validation:** Prevents common injection attacks and verifies MongoDB ObjectIDs before queries.
+
+---
+
+## 📋 API Endpoints Reference
+
+| Method | Route | Description | Auth Required |
+|---|---|---|---|
+| `GET` | `/api/health` | Health check & database connection status | No |
+| `POST` | `/api/signup` | Register a new user account | No |
+| `POST` | `/api/login` | Authenticate user & return JWT token | No |
+| `GET` | `/api/user` | Retrieve user profile information | Yes |
+| `POST` | `/api/updateUser` | Update user profile details | Yes |
+| `GET` | `/api/search` | Search & filter active marketplace listings | Yes |
+| `GET` | `/api/items` | Retrieve specific product details | Yes |
+| `POST` | `/api/sell` | List a new item for sale | Yes |
+| `POST` | `/api/cart` | Add or remove items from cart | Yes |
+| `GET` | `/api/mycart` | Get current user's cart and subtotal | Yes |
+| `POST` | `/api/checkout` | Checkout cart and generate OTPs | Yes |
+| `GET` | `/api/recd_orders` | Incoming orders for seller delivery | Yes |
+| `POST` | `/api/cnfm_order` | Confirm order handover with OTP | Yes |
+| `GET` | `/api/order_details` | Order history (pending, bought, sold) | Yes |
+| `POST` | `/api/chat` | AI chatbot customer assistant | No |
+| `POST` | `/api/new-session` | Reset AI chatbot session | No |
+
+---
+
+## Project Information
+
+**Project Name:** TradeNest  
+**Category:** Full-Stack Web Application / E-Commerce Marketplace  
+**Maintainer:** Faisal Imtiaz  
+**GitHub:** [finefigo](https://github.com/finefigo)

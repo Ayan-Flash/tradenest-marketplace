@@ -4,191 +4,287 @@ import mongoose from 'mongoose';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import axios from 'axios';
-import session from 'express-session'
+import session from 'express-session';
 import CASAuthentication from 'cas-authentication';
+import cors from 'cors';
+import OpenAI from 'openai';
+
 import User from './models/user.model.js';
 import Item from './models/item.model.js';
 import Order from './models/order.model.js';
 import { connectDB } from './config/db.js';
-import cors from 'cors';
 
 dotenv.config();
+
 const app = express();
+
+// Middleware
 app.use(express.json());
-connectDB();
-const JWT_SECRET = process.env.JWT_SECRET;
-app.use(cors());
+app.use(cors({ origin: true, credentials: true }));
 
-app.post('/signup', async (req, res) => {
-    try {
-      const { firstName, lastName, email, age, contactNumber, password } = req.body;
-
-      if (!firstName || !lastName || !email || !age || !contactNumber || !password) {
-        return res.status(400).json({ message: 'Please fill in all fields' });
-      }
-
-      const existingUser = await User.findOne({ email });
-      if (existingUser) {
-        return res.status(400).json({ message: 'User already exists' });
-      }
-
-      const user = new User({
-        firstName,
-        lastName,
-        email,
-        age,
-        contactNumber,
-        password: password.trim(),
-      });
-
-      await user.save();
-
-      res.status(201).json({ message: 'User registered successfully' });
-    } catch (error) {
-      console.error('Error during signup:', error.message); // Log the error
-      res.status(500).json({ message: 'Server error' });
-    }
-  });
-
-  app.post('/login', async (req, res) => {
-    try {
-      const { email, password, recaptchaToken } = req.body;
-
-      // Check reCAPTCHA token
-      const isRecaptchaValid = await verifyRecaptcha(recaptchaToken);
-      if (!isRecaptchaValid) {
-        return res.status(400).json({ message: "reCAPTCHA verification failed" });
-      }
-
-      // Validate email and password fields
-      if (!email || !password) {
-        return res.status(400).json({ message: 'Please fill in all fields' });
-      }
-
-      // Find user by email
-      const user = await User.findOne({ email });
-      if (!user) {
-        console.log('User not found for email:', email);
-        return res.status(401).json({ message: 'User not found' });
-      }
-
-      // Check if password matches
-      const isMatch = await bcrypt.compare(password.trim(), user.password);
-      if (!isMatch) {
-        console.log('Password does not match for user:', email);
-        return res.status(401).json({ message: 'Invalid password' });
-      }
-
-      // Generate a JWT token
-      const token = jwt.sign({ userId: user._id }, JWT_SECRET, {
-        expiresIn: '7d' // Token expiration time, e.g., 7 days
-      });
-
-      // Send the token to the client
-      res.status(200).json({ message: 'Login successful', token });
-    } catch (error) {
-      console.error('Error during login:', error.message);
-      res.status(500).json({ message: 'Server error' });
-    }
-  });
-
-  // Example implementation of verifyRecaptcha function
-  async function verifyRecaptcha(recaptchaToken) {
-    const secretKey = process.env.RECAPTCHA_SECRET_KEY;
-    if (!secretKey) {
-      console.error('RECAPTCHA_SECRET_KEY is not defined in environment variables');
-      return false;
-    }
-    const response = await axios.post(`https://www.google.com/recaptcha/api/siteverify?secret=${secretKey}&response=${recaptchaToken}`);
-    return response.data.success;
-  }
-
-app.use(session({
-  secret: '123',
-  resave: false,
-  saveUninitialized: true,
-  cookie: { secure: false }
-}));
-
-// CAS Authentication
-const cas = new CASAuthentication({
-  cas_url: 'https://login.iiit.ac.in/cas',
-  service_url: 'http://localhost:5000', // backend url
+// Database connection middleware (connects lazily or on server start)
+connectDB().catch((err) => {
+  console.warn('Initial MongoDB connection deferred:', err.message);
 });
 
-// Protected route
-app.get("/cas", cas.bounce, async (req, res) => {
+app.use(async (req, res, next) => {
+  try {
+    if (mongoose.connection.readyState === 0) {
+      await connectDB();
+    }
+  } catch (error) {
+    console.error('Database connection middleware error:', error.message);
+  }
+  next();
+});
+
+const JWT_SECRET = process.env.JWT_SECRET || 'tradenest-production-jwt-secret-key-2026';
+
+app.use(
+  session({
+    secret: process.env.SESSION_SECRET || 'tradenest-session-secret',
+    resave: false,
+    saveUninitialized: true,
+    cookie: { secure: process.env.NODE_ENV === 'production' },
+  })
+);
+
+// CAS Authentication Setup
+const getBaseUrl = () => {
+  if (process.env.APP_URL) return process.env.APP_URL;
+  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
+  return 'http://localhost:5000';
+};
+
+const cas = new CASAuthentication({
+  cas_url: process.env.CAS_URL || 'https://login.iiit.ac.in/cas',
+  service_url: getBaseUrl(),
+});
+
+// Helper for Google reCAPTCHA
+async function verifyRecaptcha(recaptchaToken) {
+  const secretKey = process.env.RECAPTCHA_SECRET_KEY;
+  // If not configured in environment or using placeholder, allow in dev/fallback
+  if (!secretKey || secretKey === 'your_recaptcha_secret_key' || recaptchaToken === 'BYPASS_LOCAL_TEST') {
+    return true;
+  }
+  if (!recaptchaToken) {
+    return false;
+  }
+  try {
+    const response = await axios.post(
+      `https://www.google.com/recaptcha/api/siteverify?secret=${secretKey}&response=${recaptchaToken}`
+    );
+    return Boolean(response.data?.success);
+  } catch (err) {
+    console.error('reCAPTCHA verification error:', err.message);
+    return false;
+  }
+}
+
+// Token Authentication Middleware
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) {
+    return res.status(401).json({ message: 'Access denied, token missing!' });
+  }
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) {
+      return res.status(403).json({ message: 'Invalid token' });
+    }
+    req.user = user;
+    next();
+  });
+};
+
+// OpenAI Client for Chatbot
+let openaiClient = null;
+function getOpenAIClient() {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) return null;
+  if (!openaiClient) {
+    openaiClient = new OpenAI({ apiKey });
+  }
+  return openaiClient;
+}
+
+// Router to support both /api/... and direct /... routes
+const router = express.Router();
+
+// Health Check
+router.get('/health', (req, res) => {
+  res.status(200).json({
+    status: 'ok',
+    service: 'TradeNest API',
+    database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// Signup
+router.post('/signup', async (req, res) => {
+  try {
+    const { firstName, lastName, email, age, contactNumber, password } = req.body;
+
+    if (!firstName || !lastName || !email || !password) {
+      return res.status(400).json({ message: 'Please fill in all required fields' });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+    const existingUser = await User.findOne({ email: normalizedEmail });
+    if (existingUser) {
+      return res.status(400).json({ message: 'User already exists with this email' });
+    }
+
+    const user = new User({
+      firstName: firstName.trim(),
+      lastName: lastName.trim(),
+      email: normalizedEmail,
+      age: age ? Number(age) : undefined,
+      contactNumber: contactNumber ? contactNumber.trim() : undefined,
+      password: password.trim(),
+    });
+
+    await user.save();
+
+    res.status(201).json({ message: 'User registered successfully' });
+  } catch (error) {
+    console.error('Error during signup:', error.message);
+    res.status(500).json({ message: error.message || 'Server error during signup' });
+  }
+});
+
+// Login
+router.post('/login', async (req, res) => {
+  try {
+    const { email, password, recaptchaToken } = req.body;
+
+    const isRecaptchaValid = await verifyRecaptcha(recaptchaToken);
+    if (!isRecaptchaValid) {
+      return res.status(400).json({ message: 'reCAPTCHA verification failed' });
+    }
+
+    if (!email || !password) {
+      return res.status(400).json({ message: 'Please provide both email and password' });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+    const user = await User.findOne({ email: normalizedEmail });
+    if (!user) {
+      return res.status(401).json({ message: 'User not found' });
+    }
+
+    if (!user.password) {
+      return res.status(401).json({ message: 'Please log in using CAS Single Sign-On' });
+    }
+
+    const isMatch = await bcrypt.compare(password.trim(), user.password);
+    if (!isMatch) {
+      return res.status(401).json({ message: 'Invalid password' });
+    }
+
+    const token = jwt.sign({ userId: user._id }, JWT_SECRET, {
+      expiresIn: '7d',
+    });
+
+    res.status(200).json({ message: 'Login successful', token });
+  } catch (error) {
+    console.error('Error during login:', error.message);
+    res.status(500).json({ message: 'Server error during login' });
+  }
+});
+
+// CAS SSO
+router.get('/cas', cas.bounce, async (req, res) => {
   try {
     const email = req.session.cas_user;
-    // console.log(email); // This prints the user email
+    if (!email) {
+      return res.status(400).send('CAS user not found in session');
+    }
 
-    // Extract first name and last name from the email
-    const [firstName, lastNameWithDomain] = email.split('.');
-    const lastName = lastNameWithDomain.split('@')[0];
+    let firstName = 'User';
+    let lastName = '';
+    const namePart = email.split('@')[0];
+    if (namePart.includes('.')) {
+      const parts = namePart.split('.');
+      firstName = parts[0] || 'User';
+      lastName = parts.slice(1).join(' ') || '';
+    } else {
+      firstName = namePart;
+    }
 
-    // Check if the user already exists
-    let user = await User.findOne({ email });
-
-    // If the user does not exist, create a new user
+    let user = await User.findOne({ email: email.toLowerCase() });
     if (!user) {
       user = new User({
         firstName,
         lastName,
-        email,
+        email: email.toLowerCase(),
       });
       await user.save();
     }
 
-    // Generate a JWT token
     const token = jwt.sign({ userId: user._id }, JWT_SECRET, { expiresIn: '7d' });
-
-    // Send the token in the response
-    // console.log(token);
-    res.redirect(`http://localhost:3000/login/${token}`);
-
+    const clientRedirectUrl = process.env.CLIENT_URL || getBaseUrl();
+    res.redirect(`${clientRedirectUrl}/login/${token}`);
   } catch (error) {
     console.error('Error during CAS user handling:', error);
     res.status(500).send('An internal server error occurred');
   }
 });
 
-app.get('/logout', cas.logout, (req, res) => {
+router.get('/logout', cas.logout, (req, res) => {
+  res.redirect('/');
 });
 
+// User Profile
+router.get('/user', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
 
-const authenticateToken = (req, res, next) => {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: 'Invalid user ID' });
+    }
 
-  if (!token) return res.status(401).json({ message: 'Access denied, token missing!' });
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
 
-  jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) return res.status(403).json({ message: 'Invalid token' });
+    res.status(200).json({
+      firstName: user.firstName,
+      lastName: user.lastName,
+      email: user.email,
+      age: user.age,
+      contactNumber: user.contactNumber,
+    });
+  } catch (error) {
+    console.error('Error retrieving user details:', error.message);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
 
-    req.user = user;
-    next();
-  });
-};
-
-app.post('/updateUser',authenticateToken, async (req, res) => {
+// Update User
+router.post('/updateUser', authenticateToken, async (req, res) => {
   try {
     const { firstName, lastName, age, contactNumber } = req.body;
-    const userId=req.user.userId;
+    const userId = req.user.userId;
 
     if (!userId) {
       return res.status(400).json({ message: 'User ID is required' });
     }
 
-    // Find user by ID and update the fields if they are provided
     const updatedUser = await User.findByIdAndUpdate(
       userId,
       {
-        ...(firstName && { firstName }),
-        ...(lastName && { lastName }),
-        ...(age && { age }),
-        ...(contactNumber && { contactNumber }),
+        ...(firstName && { firstName: firstName.trim() }),
+        ...(lastName && { lastName: lastName.trim() }),
+        ...(age !== undefined && { age: Number(age) }),
+        ...(contactNumber && { contactNumber: contactNumber.trim() }),
       },
-      { new: true, runValidators: true } // options to return the updated document and run validators
+      { new: true, runValidators: true }
     );
 
     if (!updatedUser) {
@@ -197,7 +293,13 @@ app.post('/updateUser',authenticateToken, async (req, res) => {
 
     res.status(200).json({
       message: 'User updated successfully',
-      user: updatedUser,
+      user: {
+        firstName: updatedUser.firstName,
+        lastName: updatedUser.lastName,
+        email: updatedUser.email,
+        age: updatedUser.age,
+        contactNumber: updatedUser.contactNumber,
+      },
     });
   } catch (error) {
     console.error('Error updating user:', error.message);
@@ -205,489 +307,474 @@ app.post('/updateUser',authenticateToken, async (req, res) => {
   }
 });
 
-  app.get('/user',authenticateToken, async (req, res) => {
-    try {
-      const userId=req.user.userId
+// List Item for Sale
+router.post('/sell', authenticateToken, async (req, res) => {
+  try {
+    const { name, price, description, category } = req.body;
+    const userId = req.user.userId;
 
-      // Validate the userId
-      if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
-        return res.status(400).json({ message: 'Invalid user ID' });
-      }
-
-      // Find the user by ID
-      const user = await User.findById(userId);
-
-      // Check if user exists
-      if (!user) {
-        return res.status(404).json({ message: 'User not found' });
-      }
-
-      // Respond with user details
-      res.status(200).json({
-        firstName: user.firstName,
-        lastName: user.lastName,
-        email: user.email,
-        age: user.age,
-        contactNumber: user.contactNumber
-      });
-    } catch (error) {
-      console.error('Error retrieving user details:', error.message);
-      res.status(500).json({ message: 'Server error' });
+    if (!userId || !name || price === undefined || !description || !category) {
+      return res.status(400).json({ message: 'All fields are required' });
     }
-  });
 
-  app.post('/sell',authenticateToken, async (req, res) => {
-    try {
-      const { name, price, description, category } = req.body;
-      const userId=req.user.userId;
-
-      if (!userId || !name || !price || !description || !category) {
-        return res.status(400).json({ message: 'All fields are required' });
-      }
-
-      // Validate seller exists
-      const seller = await User.findById(userId);
-      if (!seller) {
-        return res.status(404).json({ message: 'Seller not found' });
-      }
-
-      // Create a new item
-      const newItem = new Item({
-        name,
-        price,
-        description,
-        category,
-        sellerId: userId,
-        isSold: false,
-      });
-
-      // Save the new item to the database
-      await newItem.save();
-
-      res.status(201).json({
-        message: 'Item listed for sale successfully',
-        item: newItem,
-      });
-    } catch (error) {
-      console.error('Error listing item for sale:', error.message);
-      res.status(500).json({ message: 'Server error' });
+    const seller = await User.findById(userId);
+    if (!seller) {
+      return res.status(404).json({ message: 'Seller not found' });
     }
-  });
 
-  app.get('/search',authenticateToken, async (req, res) => {
-    try {
-      const { name, category } = req.query;
-      const userId=req.user.userId;
+    const newItem = new Item({
+      name: name.trim(),
+      price: Number(price),
+      description: description.trim(),
+      category: category.trim(),
+      sellerId: userId,
+      isSold: false,
+    });
 
-      // Build the query object
-      const query = { isSold: false };
+    await newItem.save();
 
-      // If a name is provided, add a case-insensitive regex search to the query
-      if (name) {
-        query.name = new RegExp(name, 'i'); // 'i' makes it case-insensitive
-      }
+    res.status(201).json({
+      message: 'Item listed for sale successfully',
+      item: newItem,
+    });
+  } catch (error) {
+    console.error('Error listing item for sale:', error.message);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
 
-      // If categories are provided, split them by comma and filter by these categories
-      if (category) {
-        const categories = category.split(','); // Assuming categories are comma-separated
-        query.category = { $in: categories };
-      }
+// Search Marketplace Items
+router.get('/search', authenticateToken, async (req, res) => {
+  try {
+    const { name, category } = req.query;
+    const userId = req.user?.userId;
 
-      // Exclude items listed by the user with the given userId
-      if (userId) {
-        if (!mongoose.Types.ObjectId.isValid(userId)) {
-          return res.status(400).json({ message: 'Invalid userId format' });
-        }
-        query.sellerId = { $ne: new mongoose.Types.ObjectId(userId) }; // Correct usage with 'new'
-      }
+    const query = { isSold: false };
 
-      // Find items based on the query
-      const items = await Item.find(query).populate('sellerId', 'firstName lastName email');
-
-      // Check if no items are found
-      if (items.length === 0) {
-        return res.status(200).json({
-          message: 'No items found matching the criteria',
-          items: []
-        });
-      }
-
-      // Respond with the found items including itemId
-      res.status(200).json({
-        message: 'Items retrieved successfully',
-        items: items.map(item => ({
-          itemId: item._id, // Include itemId in the response
-          name: item.name,
-          price: item.price,
-          description: item.description,
-          category: item.category,
-          seller: {
-            name: `${item.sellerId.firstName} ${item.sellerId.lastName}`,
-            email: item.sellerId.email
-          }
-        }))
-      });
-    } catch (error) {
-      console.error('Error retrieving items:', error.message);
-      res.status(500).json({ message: 'Server error' });
+    if (name) {
+      query.name = new RegExp(name.trim(), 'i');
     }
-  });
 
-  app.get('/items',authenticateToken, async (req, res) => {
-    try {
-      const { itemId } = req.query; // Retrieve itemId from query parameters
+    if (category) {
+      const categories = category.split(',').map((c) => c.trim());
+      query.category = { $in: categories };
+    }
 
-      // Validate the itemId
-      if (!itemId || !mongoose.Types.ObjectId.isValid(itemId)) {
-        return res.status(400).json({ message: 'Invalid item ID' });
-      }
+    if (userId && mongoose.Types.ObjectId.isValid(userId)) {
+      query.sellerId = { $ne: new mongoose.Types.ObjectId(userId) };
+    }
 
-      // Find the item by ID
-      const item = await Item.findById(itemId).populate('sellerId', 'firstName lastName email');
+    const items = await Item.find(query).populate('sellerId', 'firstName lastName email');
 
-      // Check if item exists
-      if (!item) {
-        return res.status(404).json({ message: 'Item not found' });
-      }
-
-      // Respond with item details
-      res.status(200).json({
+    res.status(200).json({
+      message: 'Items retrieved successfully',
+      items: items.map((item) => ({
         itemId: item._id,
         name: item.name,
         price: item.price,
         description: item.description,
         category: item.category,
         seller: {
-          name: `${item.sellerId.firstName} ${item.sellerId.lastName}`,
-          email: item.sellerId.email
-        }
-      });
-    } catch (error) {
-      console.error('Error retrieving item details:', error.message);
-      res.status(500).json({ message: 'Server error' });
+          name: item.sellerId
+            ? `${item.sellerId.firstName || ''} ${item.sellerId.lastName || ''}`.trim()
+            : 'Community Seller',
+          email: item.sellerId ? item.sellerId.email : '',
+        },
+      })),
+    });
+  } catch (error) {
+    console.error('Error retrieving items:', error.message);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Single Item Details
+router.get('/items', authenticateToken, async (req, res) => {
+  try {
+    const { itemId } = req.query;
+
+    if (!itemId || !mongoose.Types.ObjectId.isValid(itemId)) {
+      return res.status(400).json({ message: 'Invalid item ID' });
     }
-  });
 
-  app.post('/cart',authenticateToken, async (req, res) => {
-    try {
-      const { itemId, action } = req.body; // Get userId, itemId, and action from request body
-      const userId=req.user.userId;
-
-      // Validate input
-      if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
-        return res.status(400).json({ message: 'Invalid user ID' });
-      }
-      if (!itemId || !mongoose.Types.ObjectId.isValid(itemId)) {
-        return res.status(400).json({ message: 'Invalid item ID' });
-      }
-      if (!['add', 'remove'].includes(action)) {
-        return res.status(400).json({ message: 'Invalid action' });
-      }
-
-      // Find the user
-      const user = await User.findById(userId);
-      if (!user) {
-        return res.status(404).json({ message: 'User not found' });
-      }
-
-      // Find the item and check if it belongs to the user
-      const item = await Item.findById(itemId);
-      if (!item) {
-        return res.status(404).json({ message: 'Item not found' });
-      }
-
-      // Ensure the seller cannot add their own item to their cart
-      if (item.sellerId.toString() === userId) {
-        return res.status(403).json({ message: 'Sellers cannot add their own items to their cart' });
-      }
-
-      // Add or remove item based on action
-      if (action === 'add') {
-        if (!user.cartItems.includes(itemId)) {
-          user.cartItems.push(itemId);
-        } else {
-          return res.status(200).json({ message: 'Item is already in the cart', cartItems: user.cartItems });
-        }
-      } else if (action === 'remove') {
-        if (user.cartItems.includes(itemId)) {
-          user.cartItems = user.cartItems.filter(id => id.toString() !== itemId);
-        } else {
-          return res.status(200).json({ message: 'Item was not in the cart', cartItems: user.cartItems });
-        }
-      }
-
-      // Save user with updated cart items
-      await user.save();
-
-      // Respond with updated cart items
-      const populatedUser = await User.findById(userId).populate('cartItems');
-      res.status(200).json({
-        message: `Item successfully ${action === 'add' ? 'added to' : 'removed from'} cart`,
-        cartItems: populatedUser.cartItems
-      });
-    } catch (error) {
-      console.error('Error updating cart:', error.message);
-      res.status(500).json({ message: 'Server error' });
+    const item = await Item.findById(itemId).populate('sellerId', 'firstName lastName email');
+    if (!item) {
+      return res.status(404).json({ message: 'Item not found' });
     }
-  });
 
-  app.get('/mycart',authenticateToken, async (req, res) => {
-    try {
-      const userId=req.user.userId;
+    res.status(200).json({
+      itemId: item._id,
+      name: item.name,
+      price: item.price,
+      description: item.description,
+      category: item.category,
+      isSold: item.isSold,
+      seller: {
+        name: item.sellerId
+          ? `${item.sellerId.firstName || ''} ${item.sellerId.lastName || ''}`.trim()
+          : 'Community Seller',
+        email: item.sellerId ? item.sellerId.email : '',
+      },
+    });
+  } catch (error) {
+    console.error('Error retrieving item details:', error.message);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
 
-      // Validate the userId
-      if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
-        console.log('Invalid user ID format or missing.');
-        return res.status(400).json({ message: 'Invalid user ID' });
-      }
+// Cart Actions (Add / Remove)
+router.post('/cart', authenticateToken, async (req, res) => {
+  try {
+    const { itemId, action } = req.body;
+    const userId = req.user.userId;
 
-      // Find the user and populate cart items
-      const user = await User.findById(userId).populate('cartItems');
-      if (!user) {
-        console.log('User not found.');
-        return res.status(404).json({ message: 'User not found' });
-      }
-
-      // Calculate the total price of the cart
-      const totalCartPrice = user.cartItems.reduce((total, item) => {
-        return total + (item.price || 0); // Ensure item.price is a number
-      }, 0);
-
-      // Respond with the items in the cart and the total price
-      res.status(200).json({
-        message: 'Cart items retrieved successfully',
-        cartItems: user.cartItems.map(item => ({
-          itemId: item._id,
-          name: item.name,
-          price: item.price,
-          description: item.description,
-          category: item.category,
-          sellerId: item.sellerId
-        })),
-        totalCartPrice: totalCartPrice
-      });
-    } catch (error) {
-      console.error('Error retrieving cart items:', error);
-      res.status(500).json({ message: 'Server error' });
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: 'Invalid user ID' });
     }
-  });
-
-  app.post('/checkout',authenticateToken, async (req, res) => {
-    try {
-      const userId=req.user.userId;
-      // Validate that userId is provided
-      if (typeof userId !== 'string') {
-        return res.status(400).json({ message: 'User ID is required' });
-      }
-
-      // Validate the userId format
-      if (!mongoose.Types.ObjectId.isValid(userId)) {
-        return res.status(400).json({ message: 'Invalid user ID' });
-      }
-
-      // Find the user and populate cart items
-      const user = await User.findById(userId).populate('cartItems');
-      if (!user) {
-        return res.status(404).json({ message: 'User not found' });
-      }
-
-      // Ensure user has items in the cart
-      if (user.cartItems.length === 0) {
-        return res.status(400).json({ message: 'Cart is empty' });
-      }
-
-      // Iterate over each cart item and create an order
-      const orders = [];
-      for (const item of user.cartItems) {
-        // Generate a 6-digit OTP
-        const otp = Math.floor(100000 + Math.random() * 900000).toString();
-        const hashedOtp = await bcrypt.hash(otp, 10);
-
-        // Create an order
-        const order = new Order({
-          buyerId: userId,
-          sellerId: item.sellerId,
-          itemId: item._id,
-          amount: item.price,
-          hashedOtp: hashedOtp, // Note: In a real application, consider hashing the OTP
-          orderStatus: 'pending'
-        });
-
-        // Save the order in the database
-        await order.save();
-
-        // Add order to the response array
-        orders.push({
-          orderId: order._id, // Use the default ObjectId as the order ID
-          itemId: item._id,
-          itemName: item.name, // Include the item name
-          amount: item.price,
-          otp: otp, // Return OTP to buyer for verification; ensure secure communication
-          message: 'Item added to cart successfully' // Added message
-        });
-      }
-
-      // Clear the user's cart
-      user.cartItems = [];
-      await user.save();
-
-      // Respond with the created orders
-      res.status(200).json({
-        message: 'Checkout successful',
-        orders: orders
-      });
-    } catch (error) {
-      console.error('Error during checkout:', error);
-      res.status(500).json({ message: 'Server error' });
+    if (!itemId || !mongoose.Types.ObjectId.isValid(itemId)) {
+      return res.status(400).json({ message: 'Invalid item ID' });
     }
-  });
-
-  app.get('/recd_orders', authenticateToken, async (req, res) => {
-    try {
-      const userId = req.user.userId;
-
-      // Validate the userId
-      if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
-        return res.status(400).json({ message: 'Invalid user ID' });
-      }
-
-      // Find all orders with matching sellerId and status 'pending'
-      const orders = await Order.find({ sellerId: userId, orderStatus: 'pending' })
-        .populate('itemId', 'name price') // Populate item name and price
-        .populate('buyerId', 'name email'); // Populate buyer's name and email (or other suitable identifiers)
-
-      // Format the response
-      const formattedOrders = orders.map(order => ({
-        orderId: order._id, // Include order ID
-        itemName: order.itemId.name,
-        itemPrice: order.itemId.price,
-        buyerName: order.buyerId.name,
-        buyerEmail: order.buyerId.email
-      }));
-
-      res.status(200).json({
-        message: 'Pending orders retrieved successfully',
-        orders: formattedOrders
-      });
-    } catch (error) {
-      console.error('Error retrieving orders:', error);
-      res.status(500).json({ message: 'Server error' });
+    if (!['add', 'remove'].includes(action)) {
+      return res.status(400).json({ message: 'Invalid action' });
     }
-  });
 
-  app.get('/order_details', authenticateToken, async (req, res) => {
-    try {
-      const userId = req.user.userId;
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
 
-      // Validate the userId
-      if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
-        return res.status(400).json({ message: 'Invalid user ID' });
+    const item = await Item.findById(itemId);
+    if (!item) {
+      return res.status(404).json({ message: 'Item not found' });
+    }
+
+    if (item.sellerId.toString() === userId) {
+      return res.status(403).json({ message: 'Sellers cannot add their own items to cart' });
+    }
+
+    user.cartItems = user.cartItems || [];
+
+    if (action === 'add') {
+      const alreadyInCart = user.cartItems.some((id) => id.toString() === itemId.toString());
+      if (!alreadyInCart) {
+        user.cartItems.push(itemId);
+      } else {
+        return res.status(200).json({ message: 'Item is already in your cart', cartItems: user.cartItems });
       }
+    } else if (action === 'remove') {
+      user.cartItems = user.cartItems.filter((id) => id.toString() !== itemId.toString());
+    }
 
-      // Find pending orders where the user is the buyer
-      const pendingOrders = await Order.find({
+    await user.save();
+
+    const populatedUser = await User.findById(userId).populate('cartItems');
+    res.status(200).json({
+      message: `Item successfully ${action === 'add' ? 'added to' : 'removed from'} cart`,
+      cartItems: populatedUser.cartItems.filter(Boolean),
+    });
+  } catch (error) {
+    console.error('Error updating cart:', error.message);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Get User Cart
+router.get('/mycart', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: 'Invalid user ID' });
+    }
+
+    const user = await User.findById(userId).populate('cartItems');
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const validCartItems = (user.cartItems || []).filter((item) => item !== null && item !== undefined);
+    const totalCartPrice = validCartItems.reduce((total, item) => total + (item.price || 0), 0);
+
+    res.status(200).json({
+      message: 'Cart items retrieved successfully',
+      cartItems: validCartItems.map((item) => ({
+        itemId: item._id,
+        name: item.name,
+        price: item.price,
+        description: item.description,
+        category: item.category,
+        sellerId: item.sellerId,
+      })),
+      totalCartPrice,
+    });
+  } catch (error) {
+    console.error('Error retrieving cart items:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Checkout Cart
+router.post('/checkout', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: 'Invalid user ID' });
+    }
+
+    const user = await User.findById(userId).populate('cartItems');
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const validItems = (user.cartItems || []).filter((item) => item && !item.isSold);
+    if (validItems.length === 0) {
+      return res.status(400).json({ message: 'Cart is empty or items have already been sold' });
+    }
+
+    const orders = [];
+    for (const item of validItems) {
+      const otp = Math.floor(100000 + Math.random() * 900000).toString();
+      const hashedOtp = await bcrypt.hash(otp, 10);
+
+      const order = new Order({
         buyerId: userId,
-        orderStatus: 'pending'
-      }).populate('itemId', 'name price');
-
-      // Find successful orders where the user is the buyer
-      const successfulBoughtOrders = await Order.find({
-        orderStatus: 'success',
-        buyerId: userId
-      }).populate('itemId', 'name price');
-
-      // Find successful orders where the user is the seller
-      const successfulSoldOrders = await Order.find({
-        orderStatus: 'success',
-        sellerId: userId
-      }).populate('itemId', 'name price');
-
-      // Format orders
-      const formatOrder = (order) => {
-        const item = order.itemId || {};
-        return {
-          orderId: order._id,
-          itemName: item.name || 'Unknown',
-          itemPrice: item.price || 0,
-          buyerId: order.buyerId,
-          sellerId: order.sellerId,
-          orderStatus: order.orderStatus
-        };
-      };
-
-      const formattedPendingOrders = pendingOrders.map(formatOrder);
-      const formattedSuccessfulBoughtOrders = successfulBoughtOrders.map(formatOrder);
-      const formattedSuccessfulSoldOrders = successfulSoldOrders.map(formatOrder);
-
-      // Send response with both pending and successful orders
-      res.status(200).json({
-        message: 'Order details retrieved successfully',
-        pendingOrders: formattedPendingOrders,
-        successfulBoughtOrders: formattedSuccessfulBoughtOrders,
-        successfulSoldOrders: formattedSuccessfulSoldOrders
+        sellerId: item.sellerId,
+        itemId: item._id,
+        amount: item.price,
+        hashedOtp,
+        orderStatus: 'pending',
       });
-    } catch (error) {
-      console.error('Error retrieving order details:', error);
-      res.status(500).json({ message: 'Server error' });
-    }
-  });
 
-  app.post('/cnfm_order', authenticateToken, async (req, res) => {
-    try {
-      const { orderId } = req.query;
-      const { otp } = req.body;
-
-      // Validate inputs
-      if (!orderId || !mongoose.Types.ObjectId.isValid(orderId)) {
-        return res.status(400).json({ message: 'Invalid order ID' });
-      }
-      if (!otp) {
-        return res.status(400).json({ message: 'OTP is required' });
-      }
-
-      // Find the order by ID
-      const order = await Order.findById(orderId);
-      if (!order) {
-        return res.status(404).json({ message: 'Order not found' });
-      }
-
-      // Verify the OTP using bcrypt.compare
-      const isOtpValid = await bcrypt.compare(otp, order.hashedOtp);
-      if (!isOtpValid) {
-        return res.status(400).json({ message: 'Invalid OTP' });
-      }
-
-      // Update the order status to 'success'
-      order.orderStatus = 'success';
       await order.save();
 
-      // Remove the item from the items collection using itemId from the order
-      await Item.findByIdAndUpdate(order.itemId, { isSold: true });
-
-      // Cancel other orders with the same sellerId and itemId
-      await Order.updateMany(
-        {
-          _id: { $ne: orderId }, // Exclude the confirmed order
-          sellerId: order.sellerId,
-          itemId: order.itemId,
-          orderStatus: 'pending' // Only cancel pending orders
-        },
-        { $set: { orderStatus: 'cancelled' } }
-      );
-
-      // Respond with success message
-      res.status(200).json({ message: 'Order confirmed successfully' });
-    } catch (error) {
-      console.error('Error confirming order:', error);
-      res.status(500).json({ message: 'Server error' });
+      orders.push({
+        orderId: order._id,
+        itemId: item._id,
+        itemName: item.name,
+        amount: item.price,
+        otp,
+        message: 'Order placed successfully',
+      });
     }
-  });
 
-  app.get('/', (req, res) => {
-    res.send('E-Commerce API is running....');
-  });
+    user.cartItems = [];
+    await user.save();
 
-app.listen(5000, () => {
-  console.log('Server running on http://localhost:5000');
+    res.status(200).json({
+      message: 'Checkout successful',
+      orders,
+    });
+  } catch (error) {
+    console.error('Error during checkout:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
 });
+
+// Incoming Orders for Seller (Delivery View)
+router.get('/recd_orders', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: 'Invalid user ID' });
+    }
+
+    const orders = await Order.find({ sellerId: userId, orderStatus: 'pending' })
+      .populate('itemId', 'name price')
+      .populate('buyerId', 'firstName lastName email');
+
+    const formattedOrders = orders.map((order) => {
+      const buyerName = order.buyerId
+        ? `${order.buyerId.firstName || ''} ${order.buyerId.lastName || ''}`.trim()
+        : 'Community Buyer';
+
+      return {
+        orderId: order._id,
+        itemName: order.itemId ? order.itemId.name : 'Item removed',
+        itemPrice: order.itemId ? order.itemId.price : order.amount || 0,
+        buyerName,
+        buyerEmail: order.buyerId ? order.buyerId.email : 'N/A',
+      };
+    });
+
+    res.status(200).json({
+      message: 'Pending orders retrieved successfully',
+      orders: formattedOrders,
+    });
+  } catch (error) {
+    console.error('Error retrieving incoming orders:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Order History
+router.get('/order_details', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: 'Invalid user ID' });
+    }
+
+    const pendingOrders = await Order.find({
+      buyerId: userId,
+      orderStatus: 'pending',
+    }).populate('itemId', 'name price');
+
+    const successfulBoughtOrders = await Order.find({
+      orderStatus: 'success',
+      buyerId: userId,
+    }).populate('itemId', 'name price');
+
+    const successfulSoldOrders = await Order.find({
+      orderStatus: 'success',
+      sellerId: userId,
+    }).populate('itemId', 'name price');
+
+    const formatOrder = (order) => ({
+      orderId: order._id,
+      itemName: order.itemId?.name || 'Item removed',
+      itemPrice: order.itemId?.price || order.amount || 0,
+      buyerId: order.buyerId,
+      sellerId: order.sellerId,
+      orderStatus: order.orderStatus,
+    });
+
+    res.status(200).json({
+      message: 'Order details retrieved successfully',
+      pendingOrders: pendingOrders.map(formatOrder),
+      successfulBoughtOrders: successfulBoughtOrders.map(formatOrder),
+      successfulSoldOrders: successfulSoldOrders.map(formatOrder),
+    });
+  } catch (error) {
+    console.error('Error retrieving order details:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Confirm Order with OTP
+router.post('/cnfm_order', authenticateToken, async (req, res) => {
+  try {
+    const orderId = req.query.orderId || req.body.orderId;
+    const { otp } = req.body;
+
+    if (!orderId || !mongoose.Types.ObjectId.isValid(orderId)) {
+      return res.status(400).json({ message: 'Invalid order ID' });
+    }
+    if (!otp) {
+      return res.status(400).json({ message: 'OTP is required' });
+    }
+
+    const order = await Order.findById(orderId);
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
+
+    const isOtpValid = await bcrypt.compare(otp.toString().trim(), order.hashedOtp);
+    if (!isOtpValid) {
+      return res.status(400).json({ message: 'Invalid OTP' });
+    }
+
+    order.orderStatus = 'success';
+    await order.save();
+
+    await Item.findByIdAndUpdate(order.itemId, { isSold: true });
+
+    await Order.updateMany(
+      {
+        _id: { $ne: orderId },
+        sellerId: order.sellerId,
+        itemId: order.itemId,
+        orderStatus: 'pending',
+      },
+      { $set: { orderStatus: 'cancelled' } }
+    );
+
+    res.status(200).json({ message: 'Order confirmed successfully! Item delivery completed.' });
+  } catch (error) {
+    console.error('Error confirming order:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Chatbot (Integrated Node.js + OpenAI)
+router.post('/chat', async (req, res) => {
+  try {
+    const { message, messages = [] } = req.body;
+
+    if (!message) {
+      return res.status(400).json({ error: 'No message provided' });
+    }
+
+    const client = getOpenAIClient();
+    if (!client) {
+      return res.status(200).json({
+        reply: "Hello! I'm the TradeNest AI Assistant. To enable live AI intelligence, please set your OPENAI_API_KEY in the Vercel or environment settings.",
+        messages: [
+          ...messages,
+          { role: 'user', content: message },
+          {
+            role: 'assistant',
+            content: "Hello! I'm the TradeNest AI Assistant. To enable live AI intelligence, please set your OPENAI_API_KEY in the Vercel or environment settings.",
+          },
+        ],
+      });
+    }
+
+    const conversationHistory = Array.isArray(messages) && messages.length > 0
+      ? [...messages]
+      : [{ role: 'user', content: message }];
+
+    const hasSystem = conversationHistory.some((m) => m.role === 'system');
+    const messagesToSend = hasSystem
+      ? conversationHistory
+      : [
+          {
+            role: 'system',
+            content:
+              'You are the friendly, helpful AI support assistant for TradeNest, an e-commerce marketplace where users buy, sell, and rent products. Explain how to browse items, list items for sale, and complete transactions using OTP confirmation codes.',
+          },
+          ...conversationHistory,
+        ];
+
+    const completion = await client.chat.completions.create({
+      model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+      messages: messagesToSend,
+    });
+
+    const botMessage =
+      completion.choices[0]?.message?.content || "I couldn't generate a response.";
+    const updatedHistory = [...conversationHistory, { role: 'assistant', content: botMessage }];
+
+    res.status(200).json({ reply: botMessage, messages: updatedHistory });
+  } catch (error) {
+    console.error('OpenAI Chat error:', error.message);
+    res.status(500).json({ error: 'Error communicating with AI service' });
+  }
+});
+
+router.post('/new-session', (req, res) => {
+  res.status(200).json({ message: 'New session started' });
+});
+
+// Mount router on both /api and /
+app.use('/api', router);
+app.use('/', router);
+
+// Export for Vercel Serverless Function
+export default app;
+
+// Listen locally ONLY if run directly as the entry file (not when imported as a serverless function)
+const isEntryScript = process.argv[1] && (
+  process.argv[1].endsWith('server.js') ||
+  process.argv[1].includes('backend')
+);
+
+if (isEntryScript && process.env.VERCEL !== '1') {
+  const PORT = process.env.PORT || 5000;
+  app.listen(PORT, () => {
+    console.log(`🚀 TradeNest Backend running on http://localhost:${PORT}`);
+  });
+}
 

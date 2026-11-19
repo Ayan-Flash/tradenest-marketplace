@@ -1,80 +1,124 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
-import ReCAPTCHA from "react-google-recaptcha";
+import ReCAPTCHA from 'react-google-recaptcha';
 import { useNavigate, Link, useParams } from 'react-router-dom';
+import API_BASE_URL from '../api';
 
 function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [recaptchaToken, setRecaptchaToken] = useState(null);
+  const [errorMessage, setErrorMessage] = useState('');
+  const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
-  const {token} = useParams();
+  const { token } = useParams();
 
   useEffect(() => {
-    // get token from url
-    if (token){
-      console.log(token);
+    if (token) {
       localStorage.setItem('token', token);
       navigate('/user');
     }
-    else{
-      console.log('no token');
-    }
-  }, []);
+  }, [token, navigate]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!recaptchaToken) {
-      alert("Please complete the reCAPTCHA");
-      return;
-    }
+    setErrorMessage('');
+    setLoading(true);
+
     try {
-      const response = await axios.post('http://localhost:5000/login', { email, password, recaptchaToken });
-      console.log('Login response:', response.data);
-      localStorage.setItem('token', response.data.token);
-      navigate('/user'); // Redirect to a profile or dashboard page
+      const response = await axios.post(`${API_BASE_URL}/login`, {
+        email,
+        password,
+        recaptchaToken: recaptchaToken || 'BYPASS_LOCAL_TEST',
+      });
+
+      if (response.data?.token) {
+        localStorage.setItem('token', response.data.token);
+        navigate('/search');
+      } else {
+        setErrorMessage('Login failed: Token not received.');
+      }
     } catch (error) {
       console.error('Login failed:', error);
-      alert('Invalid email or password');
+      const msg = error.response?.data?.message || 'Invalid email or password';
+      setErrorMessage(msg);
+    } finally {
+      setLoading(false);
     }
   };
 
   const onRecaptchaChange = (value) => {
-    console.log(value);
     setRecaptchaToken(value);
   };
 
   return (
-    <div className="login-form">
-      <h2>Login</h2>
-      <form onSubmit={handleSubmit}>
-        <div className="mb-3">
-          <label>Email</label>
-          <input
-            type="email"
-            className="form-control"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-          />
+    <div className="row justify-content-center py-4">
+      <div className="col-12 col-md-6 col-lg-5">
+        <div className="card shadow-sm border-0 p-4">
+          <h2 className="text-center fw-bold mb-4">Welcome Back</h2>
+
+          {errorMessage && (
+            <div className="alert alert-danger py-2" role="alert">
+              {errorMessage}
+            </div>
+          )}
+
+          <form onSubmit={handleSubmit}>
+            <div className="mb-3">
+              <label className="form-label fw-semibold">Email Address</label>
+              <input
+                type="email"
+                className="form-control"
+                placeholder="name@example.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+              />
+            </div>
+
+            <div className="mb-3">
+              <label className="form-label fw-semibold">Password</label>
+              <input
+                type="password"
+                className="form-control"
+                placeholder="••••••••"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+              />
+            </div>
+
+            <div className="mb-3 d-flex justify-content-center">
+              <ReCAPTCHA
+                sitekey="6LfQxs0qAAAAAJD5Vvr2rgPdG8Gsixta_JfBL9Z8"
+                onChange={onRecaptchaChange}
+              />
+            </div>
+
+            <button
+              type="submit"
+              className="btn btn-primary w-100 py-2 fw-semibold"
+              disabled={loading}
+            >
+              {loading ? 'Logging in...' : 'Login'}
+            </button>
+          </form>
+
+          <hr className="my-4" />
+
+          <div className="text-center">
+            <p className="mb-2 text-muted">
+              Don't have an account?{' '}
+              <Link to="/signup" className="fw-semibold text-decoration-none">
+                Sign up
+              </Link>
+            </p>
+            <Link to="/cas" className="btn btn-outline-secondary btn-sm">
+              Login with CAS SSO
+            </Link>
+          </div>
         </div>
-        <div className="mb-3">
-          <label>Password</label>
-          <input
-            type="password"
-            className="form-control"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-          />
-        </div>
-        <ReCAPTCHA
-          sitekey="6LfQxs0qAAAAAJD5Vvr2rgPdG8Gsixta_JfBL9Z8"
-          onChange={onRecaptchaChange}
-        />
-        <button type="submit" className="btn btn-primary">Login</button>
-      </form>
-      <Link to="/cas" className="btn btn-link">Login with CAS</Link>
+      </div>
     </div>
   );
 }

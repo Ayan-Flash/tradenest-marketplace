@@ -12,9 +12,9 @@ CORS(app, resources={r"/*": {"origins": "http://localhost:3000"}})
 
 api_key = os.getenv('OPENAI_API_KEY')
 if not api_key:
-    raise ValueError("OpenAI API key not found. Please check your .env file.")
+    print("Warning: OPENAI_API_KEY not found in environment. Chat completions will return a fallback message.")
 
-client = openai.OpenAI(api_key=api_key)
+client = openai.OpenAI(api_key=api_key) if api_key else None
 
 @app.route('/chat', methods=['POST'])
 def chat():
@@ -25,6 +25,12 @@ def chat():
 
         if not user_message:
             return jsonify({'error': 'No message provided'}), 400
+
+        if not client:
+            fallback = "Hello! Please set OPENAI_API_KEY in your environment to enable live AI responses."
+            message_history.append({"role": "user", "content": user_message})
+            message_history.append({"role": "assistant", "content": fallback})
+            return jsonify({'reply': fallback, 'messages': message_history})
 
         # Append the new user message to the conversation history
         message_history.append({"role": "user", "content": user_message})
