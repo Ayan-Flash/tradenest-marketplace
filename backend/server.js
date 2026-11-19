@@ -90,13 +90,13 @@ const authenticateToken = (req, res, next) => {
 };
 
 // Helper to call Google Gemini API directly with model fallbacks and clean turn formatting
-async function callGeminiAPI(apiKey, systemPrompt, rawHistory, preferredModel = 'gemini-2.5-flash') {
+async function callGeminiAPI(apiKey, systemPrompt, rawHistory, preferredModel = 'gemini-3.8-flash') {
   const models = [
     preferredModel,
-    'gemini-2.5-flash',
-    'gemini-1.5-flash',
-    'gemini-2.0-flash',
-    'gemini-2.5-flash-lite',
+    'gemini-3.8-flash',
+    'gemini-3.5-flash-lite',
+    'gemini-3.1-flash-lite',
+    'gemini-4-argon',
   ].filter((m, i, arr) => m && arr.indexOf(m) === i);
 
   // Format contents for Gemini:
@@ -626,7 +626,7 @@ router.post('/chat', async (req, res) => {
           geminiKey,
           systemPrompt,
           conversationHistory,
-          process.env.GEMINI_MODEL || 'gemini-2.5-flash'
+          process.env.GEMINI_MODEL || 'gemini-3.8-flash'
         );
       } catch (geminiErr) {
         console.error('Gemini API execution error:', geminiErr.message);
